@@ -17,6 +17,15 @@ from __future__ import annotations
 import argparse
 import struct
 import sys
+
+# 控制台编码：GitHub Actions 的 Windows runner 是 cp1252，编不了中文，
+# 脚本里的中文提示会直接抛 UnicodeEncodeError。本地中文系统是 GBK 不会
+# 暴露这个问题，所以必须在这里兜住。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,7 +79,18 @@ def check(ico: Path) -> bool:
         print(f"[FAIL] {ico.name} 不是有效的 ICO（文件头不对）")
         return False
 
+    if len(data) < 6:
+        print(f"[FAIL] {ico.name} 只有 {len(data)} 字节，不是完整 ICO")
+        return False
+
     n = struct.unpack("<H", data[4:6])[0]
+    # 文件头声明的图标数可能超过实际内容（截断/损坏），
+    # 逐项解析时越界会直接崩，得按实际长度收敛
+    max_entries = (len(data) - 6) // 16
+    if n > max_entries:
+        print(f"[FAIL] {ico.name} 头部声明 {n} 个图标，实际只放得下 {max_entries} 个")
+        return False
+
     present = set()
     for i in range(n):
         off = 6 + i * 16

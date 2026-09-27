@@ -15,6 +15,15 @@ import json
 import re
 import subprocess
 import sys
+
+# 控制台编码：GitHub Actions 的 Windows runner 是 cp1252，编不了中文，
+# 脚本里的中文提示会直接抛 UnicodeEncodeError。本地中文系统是 GBK 不会
+# 暴露这个问题，所以必须在这里兜住。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import wave
 from dataclasses import dataclass
 from pathlib import Path
