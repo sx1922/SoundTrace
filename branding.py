@@ -9,7 +9,7 @@
 APP_NAME = "SoundTrace"
 APP_NAME_CN = "声迹"
 APP_TAGLINE = "本地实时语音转文字"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 
 # 窗口标题：录音中会在前面加 [● 录音中]
 WINDOW_TITLE = f"{APP_NAME} · {APP_NAME_CN}"

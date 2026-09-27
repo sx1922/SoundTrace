@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -68,6 +69,26 @@ def check_icon() -> bool:
     return ico.is_file()
 
 
+def sync_version() -> None:
+    """把 branding.APP_VERSION 同步进 SoundTrace.iss。
+
+    版本号原本在 branding.py 和 SoundTrace.iss 里各写一份，改一边忘另一边
+    就会出现"release 叫 0.1.1、附件却叫 0.1.0"这种错位。构建前统一一次。
+    """
+    sys.path.insert(0, str(ROOT))
+    import branding
+    ver = branding.APP_VERSION
+    iss = ROOT / "SoundTrace.iss"
+    src = iss.read_text(encoding="utf-8")
+    out = re.sub(r'#define AppVersion "[^"]*"',
+                 f'#define AppVersion "{ver}"', src)
+    out = re.sub(r'installer/SoundTrace-Setup-[0-9.]+\.exe',
+                 f'installer/SoundTrace-Setup-{ver}.exe', out)
+    if out != src:
+        iss.write_text(out, encoding="utf-8")
+        print(f"版本号已同步为 {ver}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", action="store_true", help="只构建 exe")
@@ -79,6 +100,7 @@ def main() -> int:
             shutil.rmtree(ROOT / d, ignore_errors=True)
             print(f"已清理 {d}/")
 
+    sync_version()
     check_icon()
 
     try:
