@@ -1,14 +1,11 @@
 # SoundTrace · 声迹
 
-本地实时语音转文字。
+对着麦克风说话，边说边出字。识别全程在本地跑，**不联网、不上传音频**。
 
-Windows 桌面工具，对着麦克风说话，边说边出字。识别全程在本地跑，不联网、不上传音频。
-
-底层是 [whisper.cpp](https://github.com/ggml-org/whisper.cpp)，通过 ctypes 直接调用它的 `whisper.dll`，
+底层是 [whisper.cpp](https://github.com/ggml-org/whisper.cpp)，通过 ctypes 直接调用其动态库，
 **不需要装任何编译器**。
 
 ---
-
 ## 安装
 
 **Windows**：下载 `SoundTrace-Setup-0.1.0.exe` 运行安装（装到用户目录，不需要管理员权限）。
