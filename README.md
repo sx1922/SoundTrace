@@ -42,13 +42,34 @@ python tools/fetch_assets.py        # 下载 whisper.cpp 运行时 + 模型
 python app.py
 ```
 
+## 换图标
+
+图标源文件是 `assets/SoundTrace.ico`，替换后重新构建即可：
+
+```bash
+# 1. 有 PNG 设计稿 -> 生成多尺寸 ico（Windows 各处会用不同尺寸，缺一个就发虚）
+python tools/make_icon.py 你的图标.png
+
+# 2. 只校验现有 ico 是否有效、尺寸是否齐全
+python tools/make_icon.py --check
+
+# 3. 重新构建
+python build.py
+```
+
+**源图建议 ≥512×512 的 PNG，且必须带 alpha 通道。** 没有透明通道的话
+圆角会变成黑色方块——深色背景上不明显，切到浅色任务栏就现原形了。
+
 ## 打包
 
 ```bash
-pip install pyinstaller
-pyinstaller SoundTrace.spec                       # -> dist/SoundTrace/
-iscc SoundTrace.iss                               # -> installer/*.exe
+python build.py            # exe + 安装包
+python build.py --exe      # 只出 exe（快，约 1 分钟）
+python build.py --clean    # 先清干净再构建
 ```
+
+底层就是 PyInstaller + Inno Setup，build.py 只是把两步串起来并做前置校验。
+安装包只含程序本体（约 160MB，其中大头是 Qt），模型不进包，改为首次运行下载。
 
 安装包只含程序本体（约 160MB，其中大头是 Qt），模型不进包，改为首次运行下载。
 

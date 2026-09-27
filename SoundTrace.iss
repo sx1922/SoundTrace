@@ -62,7 +62,8 @@ Source: "{#SourceDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignorever
 ; 源码工具链跟着装，自检和换模型时用得上
 Source: "tools\*.py"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "assets\SoundTrace.ico"; DestDir: "{app}"; Flags: ignoreversion
+; 图标用通配符而不是硬引用：换图标时先删旧的也不会让构建失败
+Source: "assets\*.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; 注意：models\ 和 vendor\ 不在这里，首运行下载
 
 [Icons]
