@@ -1,0 +1,42 @@
+# 运行时与模型：体积大且可由 tools/fetch_assets.py 重新获取
+models/
+vendor/
+
+# 本地配置（含用户自己的设备/参数选择）
+config.json
+
+# 构建产物（安装包 44MB，交给 GitHub Releases 而不是仓库）
+installer/
+dist/
+build/
+*.spec
+!SoundTrace.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 测试生成的音频（由 make_bench.py / make_zh_sample.py 重新合成）
+tests/bench/
+tests/*.wav
+
+# 打包过程中间产物
+*.manifest
+.manifest
+
+# 工具自身的会话记录
+.zcode/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,6 @@
+numpy>=1.24
+sounddevice>=0.4.6
+webrtcvad-wheels>=2.0.11
+PySide6>=6.5
+# 繁简统一 + 中文标点规整，纯 Python 实现，不需要编译
+opencc-python-reimplemented>=0.1.7
