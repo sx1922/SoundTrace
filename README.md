@@ -314,6 +314,26 @@ python tools\make_bench.py --eval --model small       :: 算字符错误率
 
 ---
 
+## 安装包大小
+
+安装包只含程序本体，模型和 whisper.cpp 运行时首次运行时下载。
+
+| | 大小 |
+|---|---|
+| 安装包 | 32.7 MB |
+| 安装后 | 约 110 MB |
+| 运行内存 | 约 82 MB |
+
+PyInstaller 默认会把整个 PySide6 打包（Quick / Qml / Pdf / Svg / Network /
+VirtualKeyboard 加上软件渲染的 opengl32sw），但本项目只用 QtCore、QtGui、
+QtWidgets 三个模块。构建时由 `tools/trim_dist.py` 裁掉多余的约 45MB。
+
+**Qt6*.dll 和 `plugins/` 下的插件必须成对删除。** Qt 启动时会枚举 plugins
+目录逐个加载，缺依赖的插件会让程序直接崩溃——第一次裁剪只删了 DLL 没删
+插件，打出来的包启动即崩。依赖关系用 `tools/pe_deps.py` 静态解析 PE 导入
+表得出（不加载、不执行任何东西），裁剪前会自检，检测到"有文件依赖将被删除
+的 DLL 且它不在删除列表里"就放弃裁剪。
+
 ## 资源占用
 
 实测（Windows，纯 CPU，不含显卡加速）：

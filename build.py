@@ -131,6 +131,14 @@ def main() -> int:
                 "--noconfirm", "--clean"], "构建 exe"):
         return 1
 
+    # 裁掉没用到的 Qt 模块和对应插件。必须成对删——Qt 启动时枚举加载
+    # plugins/，只删 DLL 不删插件会让程序起不来。trim_dist 内部会做
+    # 依赖自检，不安全就返回 -1 并跳过。
+    sys.path.insert(0, str(ROOT / "tools"))
+    from trim_dist import trim
+    if trim() < 0:
+        print("  裁剪自检未通过，跳过（不影响功能，只是包大一点）")
+
     exe = ROOT / "dist" / "SoundTrace" / "SoundTrace.exe"
     if exe.is_file():
         total = sum(p.stat().st_size for p in (ROOT / "dist" / "SoundTrace").rglob("*")
