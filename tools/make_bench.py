@@ -55,18 +55,14 @@ class BenchCase:
     reference: str
 
     def ref_len(self) -> int:
-        return len(_PUNCT.sub("", self.reference))
+        return len(_canon(self.reference))
 
     def errors(self, hypothesis: str) -> int:
         """去掉标点后的编辑距离（错字个数）。
 
         标点不计入：它由规则生成，不反映模型能力；繁体已在上游统一。
         """
-        ref = _PUNCT.sub("", self.reference)
-        hyp = _PUNCT.sub("", hypothesis)
-        if not ref:
-            return 0
-        return _levenshtein(ref, hyp)
+        return _levenshtein(_canon(self.reference), _canon(hypothesis))
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -81,7 +77,94 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _cn_to_int(s: str):
+    """中文数字转阿拉伯数字。处理到万位，评测语料够用。"""
+    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    total = section = number = 0
+    for ch in s:
+        if ch in digits:
+            number = digits[ch]
+        elif ch in units:
+            u = units[ch]
+            if u == 10000:
+                total += (section + number or 1) * u
+                section = number = 0
+            else:
+                if number == 0:
+                    number = 1          # "十五" -> 15
+                section += number * u
+                number = 0
+    return total + section + number
+
+
+def _canon(s: str) -> str:
+    """归一到可比形式：去标点、繁转简、数字写法统一。
+
+    whisper 会把"百分之十五"归一化成 "95%"、"两千条"成 "2000条"，这是模型
+    的正确行为而非错字。之前当错字算，严重高估了错误率——实测同一条样本宽松
+    评分 5.6%、严格评分 27.8%，差距几乎全在数字格式上。
+    """
+    from text_norm import TextNormalizer
+
+    s = _PUNCT.sub("", TextNormalizer()(s))
+    s = re.sub(r"百分之([零一二两三四五六七八九十百千万]+|[0-9]+)",
+               lambda m: str(_cn_to_int(m.group(1))), s)
+    s = re.sub(r"([0-9]+) ?%", lambda m: m.group(1), s)
+    s = re.sub(r"([零一二两三四五六七八九十百千万]+)(条|毫秒|秒|分钟|小时|天|个|次)",
+               lambda m: str(_cn_to_int(m.group(1))) + m.group(2), s)
+    return s
+
+
 def _synth(text: str, dest: Path) -> bool:
+    """合成一段语音。
+
+    必须按句切分逐句合成再拼接。实测 SAPI 对长文本（>30 字）合成不可靠：
+    尾部要么没念完（whisper 识别出的内容比参考短一大截），要么音量渐弱到
+    模型听不清。之前整个评测体系都建在这上面，测出来的 CER 31.96% 里有一大
+    部分是语料缺陷，不是模型能力——把 medium 误判成"无收益"就是这个后果。
+
+    逐句合成每句都很短（<20 字），质量稳定，拼接后内容完整。
+    """
+    parts = [t for t in re.split(r"[。；！？]", text) if t.strip()]
+    chunks = []
+    for part in parts:
+        part = part.strip("，、 ")
+        if part:
+            chunks.append(part)
+    wavs = []
+    try:
+        for i, part in enumerate(chunks):
+            w = dest.with_name(f"{dest.stem}_p{i}.wav")
+            if not _synth_one(part, w):
+                return False
+            wavs.append(w)
+        _join(wavs, dest)
+        return True
+    finally:
+        for w in wavs:
+            w.unlink(missing_ok=True)
+
+
+def _join(parts: list[Path], dest: Path) -> None:
+    """按 300ms 静音拼接，并在每段前后留白，避免边界被误切。"""
+    gap = np.zeros(int(0.3 * SAMPLE_RATE), dtype=np.int16)
+    out = []
+    for i, p in enumerate(parts):
+        with wave.open(str(p), "rb") as w:
+            out.append(np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16))
+        if i < len(parts) - 1:
+            out.append(gap)
+    data = np.concatenate(out)
+    with wave.open(str(dest), "wb") as o:
+        o.setnchannels(1)
+        o.setsampwidth(2)
+        o.setframerate(SAMPLE_RATE)
+        o.writeframes(data.tobytes())
+
+
+def _synth_one(text: str, dest: Path) -> bool:
     raw = dest.with_suffix(".raw.wav")
     ps = (
         "Add-Type -AssemblyName System.Speech; "
@@ -90,7 +173,7 @@ def _synth(text: str, dest: Path) -> bool:
         "Where-Object { $_.VoiceInfo.Culture -like 'zh*' } | "
         "Select-Object -First 1; "
         "if (-not $v) { exit 1 }; "
-        f"$s.SelectVoice($v.VoiceInfo.Name); "
+        f"$s.SelectVoice($v.VoiceInfo.Name); $s.Rate=-1; "
         f"$s.SetOutputToWaveFile('{raw}'); "
         f"$s.Speak('{text}'); $s.SetOutputToNull()"
     )

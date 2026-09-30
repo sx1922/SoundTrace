@@ -94,6 +94,7 @@ class AudioWorker(QObject):
         pos = 0
         last_partial = 0.0
         last_state = ""
+        last_loss_check = 0.0
         try:
             while self._running:
                 data, pos = self.recorder.ring.read_since(pos)
@@ -114,6 +115,14 @@ class AudioWorker(QObject):
                         last_partial = now
 
                 self.sig.level.emit(self.recorder.level)
+                if now - last_loss_check >= 1.0:
+                    last_loss_check = now
+                    lost = self.recorder.lost_ms
+                    if lost > 200 and not self._loss_warned:
+                        # 机器忙，录音有缺口。用户不看到就以为'全录上了'
+                        self._loss_warned = True
+                        self._loss_total += lost
+                        self._on_loss_warn(lost)
                 time.sleep(POLL_INTERVAL)
         finally:
             # 停录音时把没说完的段定稿，否则最后半句会丢
@@ -195,6 +204,8 @@ class MainWindow(QMainWindow):
         self._rec_start = 0.0
         self._tick_timer: QTimer | None = None
         self._toast_timer: QTimer | None = None
+        self._loss_warned = False
+        self._loss_total = 0.0
         self.loader_thread: QThread | None = None
         self.loader: ModelLoader | None = None
         self._loading_model = ""
@@ -595,6 +606,8 @@ class MainWindow(QMainWindow):
         self.recording = True
         self._stopping = False
         self._error = ""
+        self._loss_warned = False
+        self._loss_total = 0.0
         self._rec_start = time.monotonic()
         self.setWindowTitle("[● 录音中] " + self._base_title)
         self.start_btn.setText("停止录音")
@@ -692,6 +705,8 @@ class MainWindow(QMainWindow):
 
         # 状态栏只报有意义的数字：处理速度和被过滤掉的量
         bits = [f"已停止 · {len(self.rows)} 段"]
+        if self._loss_total > 500:
+            bits.append(f"⚠ 有 {self._loss_total / 1000:.1f}s 音频因机器繁忙没录上")
         if self.transcriber:
             if self.transcriber.dropped_hallucinations:
                 bits.append(f"过滤幻觉 {self.transcriber.dropped_hallucinations}")
@@ -742,6 +757,22 @@ class MainWindow(QMainWindow):
         return bar.value() >= bar.maximum() - tolerance_px
 
     @Slot(str)
+    def _on_loss_warn(self, lost_ms: float) -> None:
+        """录音出现缺口时提示一次。
+
+        机器一忙，PortAudio 的回调就赶不上截止时间，丢掉的音频等于丢掉的
+        字。不告诉用户的话，他只会觉得"这软件识别得不准"。
+        """
+        self.toast_label.setText(f"⚠ 机器繁忙，约 {lost_ms / 1000:.1f} 秒音频没录上")
+        self.toast_label.setStyleSheet(
+            f"color:{self.theme.warning}; font-weight:600;")
+        self.toast_label.setVisible(True)
+        if self._toast_timer is None:
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._hide_toast)
+        self._toast_timer.start(6000)
+
     def _toast(self, text: str, msec: int = 4000) -> None:
         """短暂反馈，不覆盖常驻状态。
 

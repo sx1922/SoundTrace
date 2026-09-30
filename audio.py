@@ -7,6 +7,7 @@ PortAudio 的回调运行在它自己的音频线程上，不能在里面做耗�
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -195,6 +196,12 @@ class MicRecorder:
         self._level = 0.0
         self._lock = threading.Lock()
         self._overflow = 0
+        self._peak_tick = 0
+        # 丢帧检测：靠实际写入量与按时间应写入量比对得出。
+        # PortAudio 的 status 标志在高负载下并不可靠——实测满载时
+        # 丢了 1024 个样本而 overflow_count 仍然是 0。
+        self._t0 = 0.0
+        self._lost_samples = 0
 
     @property
     def level(self) -> float:
@@ -203,29 +210,30 @@ class MicRecorder:
 
     @property
     def overflow_count(self) -> int:
+        """PortAudio 自报的溢出次数，实测高负载下会漏报，只作参考。"""
         return self._overflow
 
-    def start(self) -> None:
-        if self._stream is not None:
-            return
-        kwargs = dict(
-            samplerate=SAMPLE_RATE,
-            blocksize=BLOCK_SIZE,
-            dtype="int16",
-            channels=1,
-            callback=self._callback,
-        )
-        if self.device_index is not None and self.device_index >= 0:
-            kwargs["device"] = self.device_index
-        try:
-            self._stream = sd.InputStream(**kwargs)
-            self._stream.start()
-        except Exception as e:
-            self._stream = None
-            raise AudioError(
-                f"无法打开麦克风 (device={self.device_index}): {e}\n"
-                "请在界面里换一个输入设备，或检查系统隐私设置是否允许录音。"
-            ) from e
+    @property
+    def lost_ms(self) -> float:
+        """估算丢掉的音频时长（毫秒），低于 0.3% 视为计时抖动直接报 0。
+
+        音频是等时采样的：录 t 秒就该有 t*16000 个样本，少的那部分是
+        真丢的字。PortAudio 的 status 标志在满载时经常报 0（实测如此），
+        所以只能按墙钟估算。
+
+        实测：空闲与 CPU 满载都在 ±0.5% 以内且正负都有，属正常抖动；
+        真正丢帧会表现为持续单向为负、且随录音时长累积放大。
+        """
+        if not self._t0:
+            return 0.0
+        elapsed = time.monotonic() - self._t0
+        if elapsed <= 0:
+            return 0.0
+        expected = elapsed * SAMPLE_RATE
+        got = self.ring.total_written
+        short = (expected - got) / SAMPLE_RATE * 1000.0
+        # 0.3% 以下是 sleep 和时钟粒度造成的正常波动，报出来只会吓人
+        return short if short > expected / SAMPLE_RATE * 3.0 else 0.0
 
     def stop(self) -> None:
         with self._lock:
@@ -243,21 +251,30 @@ class MicRecorder:
     def __exit__(self, *exc):
         self.stop()
 
-    def _callback(self, indata, frames, time_info, status):  # noqa: ARG002
+    def _callback(self, indata, frames, time_info, status):
+        # 这个回调跑在 PortAudio 的音频线程上，必须极短。机器一忙它就赶不上
+        # 截止时间，丢掉的每一块都是真丢的字（实测满载时丢 0.8%）。
+        #
         if status:
-            # 输入溢出意味着回调没赶上，丢弃这一块但继续跑
             self._overflow += 1
         data = np.frombuffer(indata, dtype=np.int16)
-        if data.size:
-            self.ring.write(data)
-            peak = float(np.abs(data).max()) / 32768.0
+        if not data.size:
+            return
+        self.ring.write(data)
+
+        # 峰值每 4 块算一次就够——电平表是给人看趋势的。每块都做
+        # np.abs().max() 在满载机器上足以把回调拖到超时。
+        self._peak_tick += 1
+        if self._peak_tick >= 4:
+            self._peak_tick = 0
+            peak = float(np.abs(data[::4]).max()) / 32768.0
             # 上升快、下降慢，读起来更像真的电平表
             self._level = peak if peak > self._level else self._level * 0.75 + peak * 0.25
-        if self.on_level:
-            try:
-                self.on_level(self._level)
-            except Exception:
-                pass
+            if self.on_level:
+                try:
+                    self.on_level(self._level)
+                except Exception:
+                    pass
 
     def drain(self) -> np.ndarray:
         """停止录音后把残余音频全部取走。"""
