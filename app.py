@@ -440,8 +440,6 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(
             "以下内容还没准备好："
-            + (NL).join(f"  · {m}" for m in missing)
-            + "请在项目目录运行： python tools/fetch_assets.py",
             + chr(10).join(f"  · {m}" for m in missing)
             + "请在项目目录运行： python tools/fetch_assets.py",
         )
