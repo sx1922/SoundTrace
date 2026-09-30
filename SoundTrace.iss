@@ -4,7 +4,7 @@
 ;   pyinstaller SoundTrace.spec
 ;   iscc SoundTrace.iss
 ; 产物:
-;   installer/SoundTrace-Setup-0.1.2.exe
+;   installer/SoundTrace-Setup-0.1.3.exe
 ;
 ; 安装包只含程序本体（约 160MB，其中大头是 Qt）。
 ; whisper.cpp 运行时和 GGUF 模型不进安装包，改为首次运行下载：
@@ -16,7 +16,7 @@
 #define AppName "SoundTrace"
 #define AppNameCN "声迹"
 ; 版本号由 build.py 从 branding.py 同步进来，避免两处各写一份
-#define AppVersion "0.1.2"
+#define AppVersion "0.1.3"
 #define AppPublisher "SoundTrace"
 #define AppExeName "SoundTrace.exe"
 #define SourceDir "dist\SoundTrace"
