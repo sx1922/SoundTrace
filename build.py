@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -69,6 +70,17 @@ def check_icon() -> bool:
     return ico.is_file()
 
 
+def run_tests() -> bool:
+    """打包前跑测试。
+
+    0.1.0 发出去的包是坏的——`_check_assets` 方法被批量编辑整行覆盖，
+    启动即崩，而当时没有任何自动化检查拦它。测试不过就不许出包。
+    """
+    r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
+                       cwd=ROOT, env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
+    return r.returncode == 0
+
+
 def sync_version() -> None:
     """把 branding.APP_VERSION 同步进 SoundTrace.iss。
 
@@ -93,12 +105,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", action="store_true", help="只构建 exe")
     ap.add_argument("--clean", action="store_true", help="先删除 dist/ build/")
+    ap.add_argument("--skip-tests", action="store_true", help="跳过测试（不建议）")
     args = ap.parse_args()
 
     if args.clean:
         for d in ("dist", "build"):
             shutil.rmtree(ROOT / d, ignore_errors=True)
             print(f"已清理 {d}/")
+
+    if not args.skip_tests and not run_tests():
+        print()
+        print("[FAIL] 测试未通过，已中止构建。先把测试修好。")
+        return 1
 
     sync_version()
     check_icon()

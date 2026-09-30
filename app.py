@@ -744,7 +744,10 @@ class MainWindow(QMainWindow):
         if self._near_bottom():
             self.text_edit.ensureCursorVisible()
         self.rows.append((start_ms, end_ms, text))
-        # 正文有更新，说明上一句已经定稿，预览可以收了
+        # 正文有更新，说明上一句已经定稿，预览可以收了。
+        # 文本一并清掉：留着陈旧内容的话，将来任何让预览重新显示的路径
+        # 都会把上一句的残留亮出来。停止录音时也是这么处理的，保持一致。
+        self.preview.clear()
         self.preview_box.setVisible(False)
 
     @Slot(str)

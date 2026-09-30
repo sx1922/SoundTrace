@@ -48,7 +48,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller pillow
+          pip install pyinstaller pillow pytest
 
       - name: 安装 Inno Setup
         # runner 镜像可能已预装 Inno Setup，--allow-downgrade 避免非零退出
@@ -56,6 +56,13 @@ jobs:
 
       - name: 确认图标
         run: python tools/make_icon.py --check
+
+      # 0.1.0 发出去的包启动即崩（_check_assets 方法被批量编辑整行覆盖），
+      # 当时没有任何自动化检查拦它。测试不过就不许出包。
+      - name: 跑测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -q
 
       - name: 构建 exe
         run: python -m PyInstaller SoundTrace.spec --noconfirm --clean
