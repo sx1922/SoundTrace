@@ -1088,10 +1088,150 @@ def _srt_ts(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{msec:03d}"
 
 
+def _patch_root(root: Path) -> None:
+    """把 platforms.app_root 指向给定的目录。
+
+    打包后的 exe 自身的目录里没有 models/，自检要借用已安装位置的资源。
+    改 app_root 的结果，config/device 都在 import 时取过一次，所以三处都要换。
+    """
+    import audio  # noqa: F401
+    import config as _cfg
+    import device as _dev
+    import whisper_bridge as _wb
+
+    _cfg.ROOT = root
+    _wb.ROOT = root
+    _wb.VENDOR_DIR = root / "vendor" / "whisper" / "Release"
+    _dev.ROOT = root
+    _dev.CPU_DIR = _wb.VENDOR_DIR
+    platforms.app_root = lambda _root=root: _root
+
+
+def self_test(wav: str | None) -> int:
+    """无界面自检，走完整链路：加载模型 -> VAD -> 识别 -> 出文。
+
+    打包后的 exe 默认没有控制台，崩溃了什么都看不到，出了问题只能靠猜。
+    加这个模式让用户（和我）能在新机器上一条命令确认"装完能不能用"，
+    结果写到 exe 同目录的 soundtrace-selftest.log。
+
+    用法:
+        SoundTrace.exe --self-test                  # 只验证加载
+        SoundTrace.exe --self-test 某个.wav          # 顺带验证识别
+    """
+    import time
+    import wave
+
+    import numpy as np
+
+    from PySide6.QtWidgets import QMessageBox
+
+    log = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)         else Path(__file__).resolve().parent
+    log_file = log / "soundtrace-selftest.log"
+    lines: list[str] = []
+
+    def say(msg: str) -> None:
+        lines.append(msg)
+        print(msg)
+        try:
+            log_file.write_text((chr(10)).join(lines), encoding="utf-8")
+        except Exception:
+            pass
+
+    say(f"自检开始  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    say(f"可执行文件 {sys.executable}")
+    say(f"平台      {platforms.current().key}")
+    QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
+    QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
+
+    # 自检不应该弹下载框。找一个已经有模型和运行时的目录来测：
+    # 优先用 exe 同级，其次退回源码目录。
+    candidates = [log]
+    if not getattr(sys, "frozen", False):
+        candidates.append(Path(__file__).resolve().parent)
+    workdir = None
+    for c in candidates:
+        if (c / "models").is_dir() and any((c / "models").glob("ggml-*.bin")):
+            workdir = c
+            break
+    if workdir:
+        import shutil as _sh
+        _sh.copy2(wav, workdir) if wav and not (workdir / Path(wav).name).is_file() else None
+        wav = str(workdir / Path(wav).name) if wav else None
+    if not workdir:
+        # 自检需要一个已就绪的环境。没有就直说，别让下载对话框把流程卡住，
+        # 那样看起来像"启动了但没反应"。
+        say("[FAIL] 附近没有已下载的模型，无法自检。")
+        say(f"       在 {log} 或项目目录下需要有 models/ggml-*.bin")
+        say("       正常情况下首次启动会自动下载；自检请在装好后手动跑一次。")
+        return 1
+    say(f"工作目录  {workdir}")
+    _patch_root(workdir)
+
+    qapp = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    qapp.processEvents()
+
+    t0 = time.time()
+    while time.time() - t0 < 120:
+        qapp.processEvents()
+        if win.transcriber is not None and getattr(win.transcriber, "_engine", None):
+            break
+        if "失败" in win.status_label.text():
+            say(f"[FAIL] 模型加载失败：{win.status_label.text()}")
+            return 1
+        time.sleep(0.1)
+    else:
+        say(f"[FAIL] 模型加载超时（{win.status_label.text()}）")
+        return 1
+    say(f"[ ok ] 模型加载 {time.time() - t0:.1f}s  {win.cfg.model}")
+    say(f"       推理设备 {win.device_info.label}（{win.device_info.detail}）")
+
+    if not wav:
+        say("[PASS] 加载正常（未做识别测试）")
+        return 0
+
+    p = Path(wav)
+    if not p.is_file():
+        say(f"[FAIL] 找不到音频 {p}")
+        return 1
+    with wave.open(str(p), "rb") as f:
+        if f.getframerate() != 16000 or f.getnchannels() != 1:
+            say(f"[FAIL] 音频需为 16kHz 单声道，实际 {f.getframerate()}/{f.getnchannels()}")
+            return 1
+        x = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16)
+
+    from config import Config as _Cfg
+    from vad import Segmenter, VADConfig as _VC
+
+    tr = win.transcriber
+    tr.start(win._on_transcribe_output, win._on_transcribe_error)
+    sg = Segmenter(_VC.from_config(_Cfg.load()))
+    for i in range(0, x.size, 1024):
+        for seg in sg.feed(x[i : i + 1024]):
+            tr.submit_final(seg)
+        qapp.processEvents()
+    for seg in sg.flush():
+        tr.submit_final(seg)
+    tr.wait_idle(180)
+    qapp.processEvents()
+
+    say(f"[{'ok' if win.rows else 'warn'}] 识别出 {len(win.rows)} 段 "
+        f"（音频 {x.size / 16000:.1f}s）")
+    for row in win.rows:
+        say(f"       {row[2][:60]}")
+    say("[PASS] 完整链路正常" if win.rows else "[WARN] 链路没崩，但没识别出内容")
+    tr.shutdown()
+    return 0 if win.rows else 2
+
+
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
+    if "--self-test" in sys.argv:
+        i = sys.argv.index("--self-test")
+        rest = sys.argv[i + 1 :]
+        return self_test(rest[0] if rest else None)
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei UI", 10))
     win = MainWindow()

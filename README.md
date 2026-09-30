@@ -401,6 +401,21 @@ GlobalMemoryStatusEx），按下面的降级链自动选模型：
 
 实测在 CPU 满载下采集没有真正丢数据（正负误差都在 0.5% 以内，属计时抖动）。
 
+## 自检
+
+装完不确定能不能用，或者出问题了想定位：
+
+```
+SoundTrace.exe --self-test              只验证环境和模型加载
+SoundTrace.exe --self-test 某个.wav      顺带跑一遍完整识别
+```
+
+结果会写到 exe 同目录的 `soundtrace-selftest.log`，里面会写明平台、模型、
+推理设备、识别出的内容。源码运行同理：`python app.py --self-test x.wav`。
+
+另外 `python tools/live_check.py --speak 15` 可以对着麦克风实测一遍完整链路
+（真麦克风、真 VAD、真推理），录音到出字全程验证。
+
 ## 常见问题
 
 **打开就报缺文件。** 跑 `python tools\fetch_assets.py`。
