@@ -198,11 +198,12 @@ class Segmenter:
         # 能量下限：挡住持续的底噪，让 webrtcvad 只做"是不是人声"的判断
         if float(np.abs(frame).mean()) / 32768.0 < cfg.energy_floor:
             return False
-        try:
-            return self._vad.is_speech(frame.tobytes(), SAMPLE_RATE)
-        except Exception:
-            # 帧长不对时 webrtcvad 会抛异常，保守当成语音，交给后面的能量判断兜底
-            return True
+        # 帧长必须是 10/20/30ms，否则 webrtcvad 直接抛。这里只兜这一种，
+        # 不要写成 except Exception —— 那样任何 bug 都会被当成"这是语音"，
+        # 表现是 VAD 静默失灵，比崩掉更难查。
+        if frame.size not in (320, 480, 960):
+            raise ValueError(f"VAD 帧长非法: {frame.size}（应为 320/480/960）")
+        return self._vad.is_speech(frame.tobytes(), SAMPLE_RATE)
 
     def _step(self, frame: np.ndarray, is_speech: bool) -> None:
         cfg = self.config

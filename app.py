@@ -41,6 +41,7 @@ from audio import AudioError, MicRecorder, list_input_devices, default_input_ind
 from config import Config
 import theme
 from download_dialog import DownloadDialog
+from live_cursor import EmptyStateOverlay, LiveInsertionMark
 from settings import SettingsDialog
 from widgets import LevelMeter
 from transcribe import Output, Transcriber
@@ -193,6 +194,7 @@ class MainWindow(QMainWindow):
         self._error = ""         # 本次会话的错误，收尾时别覆盖掉
         self._rec_start = 0.0
         self._tick_timer: QTimer | None = None
+        self._toast_timer: QTimer | None = None
         self.loader_thread: QThread | None = None
         self.loader: ModelLoader | None = None
         self._loading_model = ""
@@ -228,6 +230,12 @@ class MainWindow(QMainWindow):
         tag.setStyleSheet(f"color:{self.theme.text_muted};")
         head.addWidget(tag)
         head.addStretch(1)
+        # 录音指示 + 计时放在抬头右侧：口述时眼睛主要在文字区，
+        # 计时埋在底部状态行会被忽略
+        self.rec_pill = QLabel("")
+        self.rec_pill.setVisible(False)
+        head.addWidget(self.rec_pill)
+
         ver = QLabel("v" + branding.APP_VERSION)
         ver.setStyleSheet(f"color:{self.theme.text_muted};")
         head.addWidget(ver)
@@ -310,6 +318,10 @@ class MainWindow(QMainWindow):
         self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
         root.addWidget(self.text_edit, 1)
 
+        # 覆盖在正文上的两层：录音时的活插入点、空状态引导
+        self.live_mark = LiveInsertionMark(self.text_edit)
+        self.empty_state = EmptyStateOverlay(self.text_edit, self.theme)
+
         # 实时预览
         # 预览做成正文的视觉延续：左侧一条竖线 + 缩进 + 灰斜体，
         # 一眼能看出"这句还没定稿"，而不是另一块独立内容。
@@ -361,7 +373,13 @@ class MainWindow(QMainWindow):
         row3.addStretch(1)
 
         self.status_label = QLabel("准备中…")
-        row3.addWidget(self.status_label)
+        row3.addWidget(self.status_label, 1)
+
+        # 独立的反馈位：复制/导出这类"操作完成"不能挤占状态栏，
+        # 状态栏随时会被设备信息、过滤统计覆盖，用户来不及看
+        self.toast_label = QLabel("")
+        self.toast_label.setVisible(False)
+        row3.addWidget(self.toast_label)
         root.addLayout(row3)
 
         self.setCentralWidget(central)
@@ -585,6 +603,9 @@ class MainWindow(QMainWindow):
             f"border:1px solid {self.theme.danger}; border-radius:8px;"
         )
         self._set_controls_enabled(False)
+        self.live_mark.set_active(True)
+        self.rec_pill.setVisible(True)
+        self._update_rec_pill("00:00")
         self._on_status(f"录音中 · {self.device_info.label} · {self.device_info.detail}")
         self._on_vad_state("idle")
         self._tick_timer = QTimer(self)
@@ -598,7 +619,9 @@ class MainWindow(QMainWindow):
     def _on_tick(self) -> None:
         """录音时长。定时器在停止时销毁。"""
         el = int(time.monotonic() - self._rec_start)
-        self.elapsed_label.setText(f"{el // 60:02d}:{el % 60:02d}")
+        stamp = f"{el // 60:02d}:{el % 60:02d}"
+        self.elapsed_label.setText(stamp)
+        self._update_rec_pill(stamp)
 
     def stop_recording(self) -> None:
         """请求停止。
@@ -653,6 +676,8 @@ class MainWindow(QMainWindow):
         self._on_vad_state("idle")
         self.level_bar.reset()
         self.elapsed_label.setText("")
+        self.live_mark.set_active(False)
+        self.rec_pill.setVisible(False)
         # 预览只是临时结果，停止时直接丢掉。把它拼进状态栏是没意义的：
         # 停止录音时 Segmenter.flush() 已经把没说完的段走正常识别定稿了，
         # 剩下的预览要么已被定稿覆盖，要么是没通过过滤的碎片
@@ -717,6 +742,34 @@ class MainWindow(QMainWindow):
         return bar.value() >= bar.maximum() - tolerance_px
 
     @Slot(str)
+    def _toast(self, text: str, msec: int = 4000) -> None:
+        """短暂反馈，不覆盖常驻状态。
+
+        复制、导出、清空这些操作的结果放这里，几秒后自动消失；
+        状态栏留给"当前处于什么状态"这类需要持续可见的信息。
+        """
+        self.toast_label.setText(text)
+        self.toast_label.setStyleSheet(
+            f"color:{self.theme.success}; padding-right:4px;")
+        self.toast_label.setVisible(True)
+        if self._toast_timer is None:
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._hide_toast)
+        self._toast_timer.start(msec)
+
+    def _hide_toast(self) -> None:
+        self.toast_label.setVisible(False)
+        self.toast_label.clear()
+
+    def _update_rec_pill(self, stamp: str) -> None:
+        """抬头上的录音指示牌。"""
+        t = self.theme
+        self.rec_pill.setText(f"  ●  录音中  {stamp}  ")
+        self.rec_pill.setStyleSheet(
+            f"color:{t.accent_text}; background:{t.danger};"
+            f"border-radius:11px; padding:3px 10px; font-weight:600;")
+
     def _on_vad_state(self, state: str) -> None:
         self._vad_state = state
         if state == "speech":
@@ -810,6 +863,7 @@ class MainWindow(QMainWindow):
         self.theme = theme.apply(name)
         self.cfg.save()
         self.level_bar.set_theme(self.theme)
+        self.empty_state.set_theme(self.theme)
         self.preview.setStyleSheet(
             f"color:{self.theme.text_muted}; font-style:italic; padding:4px 0;"
         )
@@ -854,11 +908,11 @@ class MainWindow(QMainWindow):
         self.rows.clear()
         self.preview.clear()
         self.preview_box.setVisible(False)
-        self._on_status("已清空")
+        self._toast("已清空")
 
     def copy_all(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText())
-        self._on_status("已复制到剪贴板")
+        self._toast("已复制全文到剪贴板")
 
     def export(self) -> None:
         text = self.text_edit.toPlainText().strip()
@@ -888,7 +942,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "导出失败", str(e))
             return
-        self._on_status(f"已导出到 {path} {note}")
+        extra = note.strip("（）") if note else ""
+        self._toast("已导出" + (f"（{extra}）" if extra else ""))
 
     def _to_srt(self) -> tuple[str, bool]:
         """生成 srt 内容。

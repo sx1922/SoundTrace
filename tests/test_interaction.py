@@ -213,3 +213,69 @@ def test_vad_config_from_config():
     assert v.end_frames == 75        # 1500ms / 20ms
     assert v.aggressiveness == 1
     assert v.min_segment_ms == 700
+
+
+# -- 口述体验相关的覆盖层 ---------------------------------------------------
+
+
+def test_insertion_mark_hidden_when_idle(win):
+    """不录音时不该有插入点指示，免得误以为还能往那儿输入。"""
+    assert win.live_mark.isHidden()
+
+
+def test_insertion_mark_cursor_rect_in_bounds(win, qapp):
+    """插入点必须落在正文可视区内，否则会画到窗口外面。"""
+    win._on_final_text("一段文字", 0, 1000)
+    win.live_mark.set_active(True)
+    win.text_edit.show()
+    qapp.processEvents()
+    rect = win.live_mark.cursor_rect()
+    assert rect is not None, "拿不到插入点位置"
+    x, y, _w, _h = rect
+    inner = win.text_edit.contentsRect()
+    assert inner.left() <= x <= inner.right(), f"插入点 x={x} 越界"
+    assert inner.top() <= y <= inner.bottom(), f"插入点 y={y} 越界"
+    win.live_mark.set_active(False)
+
+
+def test_insertion_mark_visible_while_recording(win):
+    win.live_mark.set_active(True)
+    assert not win.live_mark.isHidden()
+    win.live_mark.set_active(False)
+    assert win.live_mark.isHidden()
+
+
+def test_empty_state_tracks_content(win, qapp):
+    """空文本显示引导，有内容后必须消失，否则会盖住识别结果。"""
+    win.text_edit.setPlainText("")
+    qapp.processEvents()
+    win.empty_state._sync(win.text_edit)
+    assert not win.empty_state.isHidden()
+    win._on_final_text("有内容了", 0, 1000)
+    assert win.empty_state.isHidden()
+
+
+def test_rec_pill_toggle(win):
+    win.rec_pill.setVisible(True)
+    assert not win.rec_pill.isHidden()
+    win.rec_pill.setVisible(False)
+    assert win.rec_pill.isHidden()
+
+
+def test_rec_pill_shows_timer(win):
+    win._update_rec_pill("01:23")
+    assert "01:23" in win.rec_pill.text()
+    assert "录音中" in win.rec_pill.text()
+
+
+def test_toast_does_not_touch_status(win):
+    """操作反馈走独立位，不能把常驻状态冲掉。"""
+    win._on_status("录音中 · GPU")
+    win._toast("已复制全文到剪贴板")
+    assert win.status_label.text() == "录音中 · GPU", "toast 覆盖了状态栏"
+    assert "已复制" in win.toast_label.text()
+
+
+def test_toast_texts_exist(win):
+    win.copy_all()
+    assert "已复制" in win.toast_label.text()
