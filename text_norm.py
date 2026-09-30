@@ -35,14 +35,8 @@ class TextNormalizer:
         self.simplify = simplify
         self.fix_punctuation = fix_punctuation
         self._cc = None
-        if simplify:
-            try:
-                from opencc import OpenCC
-
-                self._cc = OpenCC("t2s")
-            except Exception:
-                # 没装 opencc 就退化成只做标点处理，不影响主流程
-                self._cc = None
+        # opencc 改成懒加载：它的词典要 2MB 内存，而且导入本身有开销。
+        # 关掉繁简转换时完全不碰它，英文识别或用户不需要时省下来。
 
     @property
     def simplify_available(self) -> bool:
@@ -51,12 +45,25 @@ class TextNormalizer:
     def __call__(self, text: str) -> str:
         return self.normalize(text)
 
+    @staticmethod
+    def _load_cc():
+        try:
+            from opencc import OpenCC
+
+            return OpenCC("t2s")
+        except Exception:
+            # 没装 opencc 就退化成只做标点处理，不影响主流程
+            return None
+
     def normalize(self, text: str) -> str:
         if not text:
             return text
 
-        if self._cc is not None:
-            text = self._cc.convert(text)
+        if self.simplify:
+            if self._cc is None:
+                self._cc = self._load_cc()
+            if self._cc is not None:
+                text = self._cc.convert(text)
 
         if self.fix_punctuation:
             text = self._fix_punct(text)

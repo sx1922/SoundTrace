@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 import branding
 import platforms
+import recommend
 import device
 from audio import AudioError, MicRecorder, list_input_devices, default_input_index
 from config import Config
@@ -48,7 +49,7 @@ from transcribe import Output, Transcriber
 from vad import Segmenter, VADConfig
 
 SAMPLE_RATE = 16000
-POLL_INTERVAL = 0.03
+POLL_INTERVAL_IDLE = 0.06   # 秒
 
 
 class Signals(QObject):
@@ -123,7 +124,10 @@ class AudioWorker(QObject):
                         self._loss_warned = True
                         self._loss_total += lost
                         self._on_loss_warn(lost)
-                time.sleep(POLL_INTERVAL)
+                # 采集是 PortAudio 自己的线程在跑，这里只是轮询环形缓冲。
+                # 醒得再勤也不会让音频更准，只是白烧 CPU——老电脑上这一点
+                # 在意明显。60ms 相对 1.2 秒的预览间隔完全够。
+                time.sleep(POLL_INTERVAL_IDLE)
         finally:
             # 停录音时把没说完的段定稿，否则最后半句会丢
             for seg in self.segmenter.flush():
@@ -503,12 +507,31 @@ class MainWindow(QMainWindow):
         self.device_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.device_combo.blockSignals(False)
 
+    def _auto_pick_model(self) -> None:
+        """首次运行按可用内存挑模型。
+
+        老电脑直接加载默认模型会被系统换页，表现为界面卡、录音丢字。
+        这里按实测占用表选一个装得下的。
+        """
+        have = [p.name for p in self.cfg.available_models()]
+        if not have:
+            return
+        rec = recommend.recommend(preferred=None, have=have)
+        idx = self.model_combo.findData(rec.model)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        self.cfg.model = rec.model
+        self.cfg.save()
+        if rec.tight:
+            self._on_status(f"内存偏紧（可用 {rec.available_mb}MB），已选 {rec.model}")
+
     def _refresh_models(self) -> None:
         """列出 models/ 下已有的权重。"""
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         for p in self.cfg.available_models():
-            self.model_combo.addItem(p.name, p.name)
+            self.model_combo.addItem(f"{p.name}  —  {recommend.describe(p.name)}",
+                                    p.name)
         if self.model_combo.count() == 0:
             self.model_combo.addItem("(models/ 目录为空)", "")
         idx = self.model_combo.findData(self.cfg.model)
@@ -1025,11 +1048,21 @@ class MainWindow(QMainWindow):
 
         # 模型必须在加载线程上释放，那里才有对应的 CUDA 上下文归属。
         # 用信号让它在自己线程里做，直接调用会退化成跨线程释放。
-        if self.loader_thread is not None and self.loader_thread.isRunning():
-            if self.loader is not None:
-                self.loader.release.emit()
-            self.loader_thread.quit()
+        # 电平表峰值保持的定时器
+        if getattr(self, "peak_timer", None):
+            self.peak_timer.stop()
+            self.peak_timer.deleteLater()
+            self.peak_timer = None
+
+        if self.loader_thread is not None:
+            # 不管线程是否还在跑都要等它退出，否则进程收尾时 Qt 会报
+            # "QThread: Destroyed while thread is still running"
+            if self.loader_thread.isRunning():
+                if self.loader is not None:
+                    self.loader.release.emit()
+                self.loader_thread.quit()
             self.loader_thread.wait(30000)
+            self.loader_thread = None
         elif self.transcriber:
             self.transcriber.shutdown()
 
