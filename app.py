@@ -116,8 +116,9 @@ class AudioWorker(QObject):
                         last_partial = now
 
                 self.sig.level.emit(self.recorder.level)
-                if now - last_loss_check >= 1.0:
-                    last_loss_check = now
+                tick = time.monotonic()
+                if tick - last_loss_check >= 1.0:
+                    last_loss_check = tick
                     lost = self.recorder.lost_ms
                     if lost > 200 and not self._loss_warned:
                         # 机器忙，录音有缺口。用户不看到就以为'全录上了'

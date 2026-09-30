@@ -299,3 +299,39 @@ class TestRealAudio:
         r = eng.transcribe(x, language="en")
         eng.free()
         assert "country" in r.text.lower(), f"识别结果异常: {r.text!r}"
+
+
+class TestMicRecorder:
+    """MicRecorder 的接口完整性。
+
+    start() 曾被一次按行号的批量编辑整段覆盖掉，导致点"开始录音"立刻
+    AttributeError。录音路径依赖真实硬件没法在 CI 里跑，所以这里只做
+    接口层面的检查——方法在不在、能不能安全地重复调用。
+    """
+
+    def test_has_lifecycle_methods(self):
+        from audio import MicRecorder
+
+        for name in ("start", "stop", "level", "lost_ms",
+                     "overflow_count", "drain", "snapshot"):
+            assert hasattr(MicRecorder, name), f"MicRecorder 缺少 {name}"
+
+    def test_init_without_hardware_is_safe(self):
+        """构造不该碰硬件，start 之前的任何操作都该安全。"""
+        from audio import MicRecorder
+
+        r = MicRecorder(device_index=-1)
+        assert r.level == 0.0
+        assert r.lost_ms == 0.0
+        assert r.overflow_count == 0
+        r.stop()          # 没 start 就 stop，不能抛
+
+    def test_context_manager_calls_start(self):
+        """__enter__ 会调 start，这个方法必须存在。"""
+        import inspect
+
+        from audio import MicRecorder
+
+        src = inspect.getsource(MicRecorder.__enter__)
+        assert "self.start()" in src
+        assert hasattr(MicRecorder, "start")

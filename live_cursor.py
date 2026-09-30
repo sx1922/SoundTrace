@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 
@@ -123,7 +123,6 @@ class LiveInsertionMark(QWidget):
         p.drawLine(x, y + 2, x, y + h - 2)
 
         # 小三角，指示"内容往这边长"
-        tri = QPolygon()
         p.setBrush(accent)
         p.setPen(Qt.NoPen)
         p.drawPolygon(_tri(x + 1, y + h // 2, 6))
@@ -131,9 +130,7 @@ class LiveInsertionMark(QWidget):
         p.end()
 
 
-def _tri(x: int, y: int, s: int):
-    from PySide6.QtGui import QPolygon
-
+def _tri(x: int, y: int, s: int) -> QPolygon:
     return QPolygon([QPoint(x, y - s), QPoint(x + s, y), QPoint(x, y + s)])
 
 

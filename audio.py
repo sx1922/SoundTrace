@@ -235,6 +235,33 @@ class MicRecorder:
         # 0.3% 以下是 sleep 和时钟粒度造成的正常波动，报出来只会吓人
         return short if short > expected / SAMPLE_RATE * 3.0 else 0.0
 
+    def start(self) -> None:
+        """打开输入流。重复调用安全（已在录音就直接返回）。"""
+        with self._lock:
+            if self._stream is not None:
+                return
+            self._t0 = time.monotonic()
+            self._lost_samples = 0
+            self._peak_tick = 0
+            kwargs = dict(
+                samplerate=SAMPLE_RATE,
+                blocksize=BLOCK_SIZE,
+                dtype="int16",
+                channels=1,
+                callback=self._callback,
+            )
+            if self.device_index is not None and self.device_index >= 0:
+                kwargs["device"] = self.device_index
+            try:
+                self._stream = sd.InputStream(**kwargs)
+                self._stream.start()
+            except Exception as e:
+                self._stream = None
+                raise AudioError(
+                    f"无法打开麦克风 (device={self.device_index}): {e}\n"
+                    "请在界面里换一个输入设备，或检查系统隐私设置是否允许录音。"
+                ) from e
+
     def stop(self) -> None:
         with self._lock:
             if self._stream is not None:
