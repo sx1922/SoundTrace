@@ -68,7 +68,12 @@ echo [3/3] First run: downloading runtime and model, about 500 MB ...
 if errorlevel 1 goto :fail
 
 :run
-echo [OK] SoundTrace 0.1.0
+rem Version comes from branding.py -- do not hardcode it here.
+rem It drifted to 0.1.0 once already.
+set "APPVER="
+for /f "usebackq delims=" %%V in (`%PY% -c "import branding; print(branding.APP_VERSION)"`) do set "APPVER=%%V"
+if not defined APPVER set "APPVER=dev"
+echo [OK] SoundTrace %APPVER%
 echo [OK] Starting ...
 echo.
 %PY% app.py

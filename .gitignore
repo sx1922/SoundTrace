@@ -21,11 +21,17 @@ venv/
 
 # 测试生成的音频（由 make_bench.py / make_zh_sample.py 重新合成）
 tests/bench/
-tests/*.wav
+# bench 的中间产物，只在本地跑才有意义，别入库
+tests/tmp/
+# 注意：这里不要写 tests/*.wav。tests/jfk.wav、room.wav、zh16k.wav 是
+# 测试必需的样本，入库后十几个用例才不会在 CI 上静默 skip。
 
 # 打包过程中间产物
 *.manifest
 .manifest
+
+# 本地运行日志
+*.log
 
 # 工具自身的会话记录
 .zcode/

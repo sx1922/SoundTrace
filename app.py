@@ -57,6 +57,7 @@ class Signals(QObject):
 
     level = Signal(float)
     vad_state = Signal(str)
+    loss_warn = Signal(float)         # 本次录音检测到的累计丢帧毫秒
     final_text = Signal(str, int, int)      # 文本, 起始毫秒, 结束毫秒
     partial_text = Signal(str)
     error = Signal(str)
@@ -78,6 +79,8 @@ class AudioWorker(QObject):
         self.live_interval = live_interval_ms / 1000.0
         self.sig = sig
         self._running = False
+        # 每次会话只提醒一次，状态属于这次录音而不是窗口
+        self._loss_warned = False
 
     def stop(self) -> None:
         self._running = False
@@ -121,10 +124,11 @@ class AudioWorker(QObject):
                     last_loss_check = tick
                     lost = self.recorder.lost_ms
                     if lost > 200 and not self._loss_warned:
-                        # 机器忙，录音有缺口。用户不看到就以为'全录上了'
+                        # 机器忙，录音有缺口。用户不看到就以为'全录上了'。
+                        # 只能发信号回 GUI 线程：提示和累计都归窗口管，
+                        # worker 直接调窗口的方法会 AttributeError。
                         self._loss_warned = True
-                        self._loss_total += lost
-                        self._on_loss_warn(lost)
+                        self.sig.loss_warn.emit(lost)
                 # 采集是 PortAudio 自己的线程在跑，这里只是轮询环形缓冲。
                 # 醒得再勤也不会让音频更准，只是白烧 CPU——老电脑上这一点
                 # 在意明显。60ms 相对 1.2 秒的预览间隔完全够。
@@ -209,7 +213,6 @@ class MainWindow(QMainWindow):
         self._rec_start = 0.0
         self._tick_timer: QTimer | None = None
         self._toast_timer: QTimer | None = None
-        self._loss_warned = False
         self._loss_total = 0.0
         self.loader_thread: QThread | None = None
         self.loader: ModelLoader | None = None
@@ -440,6 +443,7 @@ class MainWindow(QMainWindow):
 
         self.sig.level.connect(self._on_level)
         self.sig.vad_state.connect(self._on_vad_state)
+        self.sig.loss_warn.connect(self._on_loss_warn)
         self.sig.final_text.connect(self._on_final_text)
         self.sig.partial_text.connect(self._on_partial_text)
         self.sig.error.connect(self._on_error)
@@ -630,7 +634,6 @@ class MainWindow(QMainWindow):
         self.recording = True
         self._stopping = False
         self._error = ""
-        self._loss_warned = False
         self._loss_total = 0.0
         self._rec_start = time.monotonic()
         self.setWindowTitle("[● 录音中] " + self._base_title)
@@ -780,13 +783,15 @@ class MainWindow(QMainWindow):
         bar = self.text_edit.verticalScrollBar()
         return bar.value() >= bar.maximum() - tolerance_px
 
-    @Slot(str)
+    @Slot(float)
     def _on_loss_warn(self, lost_ms: float) -> None:
         """录音出现缺口时提示一次。
 
         机器一忙，PortAudio 的回调就赶不上截止时间，丢掉的音频等于丢掉的
         字。不告诉用户的话，他只会觉得"这软件识别得不准"。
         """
+        # 累计归窗口管：收尾时要报总时长，而那时 worker 已经退出了
+        self._loss_total += lost_ms
         self.toast_label.setText(f"⚠ 机器繁忙，约 {lost_ms / 1000:.1f} 秒音频没录上")
         self.toast_label.setStyleSheet(
             f"color:{self.theme.warning}; font-weight:600;")
@@ -912,7 +917,10 @@ class MainWindow(QMainWindow):
         QSS 是挂在 QApplication 上的，所以重设一次全局生效；
         自绘控件（电平表、预览竖线、VAD 灯）得单独通知。
         """
-        if name == self.cfg.theme:
+        # 和"当前已经套上的主题"比，不是和 cfg.theme 比。设置对话框在
+        # accept 前就把新值写进了 cfg，用 cfg 当基准会让这里提前 return，
+        # 主题只落盘不生效。
+        if name == self.theme.name:
             return
         self.cfg.theme = name
         self.theme = theme.apply(name)
@@ -930,7 +938,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec() != SettingsDialog.Accepted:
             return
-        if getattr(dlg, "theme_changed", False):
+        # theme_changed 在 __init__ 里就初始化过了，取消时读到的是 False
+        if dlg.theme_changed:
             self.set_theme(dlg.theme_combo.currentData())
         # 设备偏好变了要重新探测；其余参数下次录音生效
         if self.cfg.device != self._device_pref:

@@ -37,6 +37,9 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("设置")
         self.setMinimumWidth(430)
         self.cfg = cfg
+        # 调用方（app.py）会读这个属性来决定要不要当场换主题。
+        # 在 __init__ 里就建好，用户点取消时它也是合法的 False。
+        self.theme_changed = False
 
         root = QVBoxLayout(self)
 
@@ -147,6 +150,9 @@ class SettingsDialog(QDialog):
         self.cfg.fix_punctuation = self.punct_cb.isChecked()
         # 先比较再写入：写进去之后再比就永远是 False 了
         self.theme_changed = self.theme_combo.currentData() != self.cfg.theme
+        # theme 必须和 device 一起写回。只算 theme_changed 却不落到 cfg 上，
+        # 效果是当场换好了、重启又退回去——用户只会觉得功能坏了。
+        self.cfg.theme = self.theme_combo.currentData()
         self.cfg.device = self.device_combo_c.currentData()
         try:
             self.cfg.save()
