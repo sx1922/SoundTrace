@@ -120,18 +120,32 @@ def _canon(s: str) -> str:
 def _synth(text: str, dest: Path) -> bool:
     """合成一段语音。
 
-    必须按句切分逐句合成再拼接。实测 SAPI 对长文本（>30 字）合成不可靠：
+    必须切碎再合成再拼接。实测 SAPI 对长文本（>30 字）合成不可靠：
     尾部要么没念完（whisper 识别出的内容比参考短一大截），要么音量渐弱到
     模型听不清。之前整个评测体系都建在这上面，测出来的 CER 31.96% 里有一大
     部分是语料缺陷，不是模型能力——把 medium 误判成"无收益"就是这个后果。
 
-    逐句合成每句都很短（<20 字），质量稳定，拼接后内容完整。
+    只按句号切是不够的。"这个方案…每秒两千条，…百分之九十五以上，延迟控制
+    在三百毫秒以内。"是一条 43 字、内部全是逗号的单句，整体仍然超长，尾部
+    照样念不出来——实测这一条就凭空贡献了约 5 个百分点的"错字"，而且所有
+    模型都在同一个位置截断，看起来像模型能力问题。所以超长的分句还要按
+    逗号再切一刀。
     """
+    max_chunk = 20          # 字。SAPI 在这个长度内稳定
     parts = [t for t in re.split(r"[。；！？]", text) if t.strip()]
-    chunks = []
+    chunks: list[str] = []
     for part in parts:
         part = part.strip("，、 ")
-        if part:
+        if not part:
+            continue
+        if len(part) <= max_chunk:
+            chunks.append(part)
+            continue
+        sub = [t.strip("，、 ") for t in re.split(r"[，,、]", part) if t.strip()]
+        if len(sub) > 1 and all(len(t) <= max_chunk for t in sub):
+            chunks.extend(sub)
+        else:
+            # 切完还是超长（无标点的长句）只能整着上；测试语料里没有这种句子
             chunks.append(part)
     wavs = []
     try:

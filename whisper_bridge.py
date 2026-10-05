@@ -385,6 +385,7 @@ class WhisperEngine:
         no_speech_thold: float = 0.6,
         temperature: float = 0.0,
         initial_prompt: str | None = None,
+        single_segment: bool = True,
     ) -> Result:
         """识别一段 int16 单声道 16kHz 音频。
 
@@ -393,6 +394,8 @@ class WhisperEngine:
             language: 语言代码，"auto" 表示自动检测。
             no_speech_thold: 判定为"没说话"的概率阈值。麦克风场景下必须
                 调高（默认 0.2 太松），否则环境噪音会不断触发幻觉输出。
+            single_segment: 强制把整段音频当作一段输出。见下面��说明——
+                这个开关对长音频的漏字影响很大，实测差异见 tools/ab_single_segment.py。
         """
         if self._ctx is None:
             raise WhisperError("模型尚未加载，请先调用 load()")
@@ -408,9 +411,7 @@ class WhisperEngine:
         params.language = language.encode("utf-8")
         params.translate = False
         params.no_timestamps = True
-        # 逐段送入时强制单段输出，否则模型会自己再切一刀，时间戳和
-        # no_speech_prob 的归属就乱了。
-        params.single_segment = True
+        params.single_segment = single_segment
         params.print_progress = False
         params.print_realtime = False
         params.print_special = False
