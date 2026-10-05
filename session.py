@@ -27,6 +27,8 @@ from vad import Segmenter, SpeechSegment, VADConfig
 
 # 丢帧累计超过这个值就提醒用户。低于 0.3% 属于时钟抖动，见 MicRecorder.lost_ms。
 LOSS_WARN_MS = 200.0
+# 两次丢帧检查的最小间隔。lost_ms 是累计量，节流放在这一层做，
+# 调用方只管每轮把最新的累计值传进来。
 LOSS_REPORT_INTERVAL_S = 1.0
 
 
@@ -65,6 +67,7 @@ class RecorderSession:
         self._pending: list[SpeechSegment] = []
         self._last_partial = 0.0
         self._last_state = ""
+        self._last_loss_check: float | None = None
         self._loss_reported = False
         self._finished = False
 
@@ -82,10 +85,13 @@ class RecorderSession:
 
     # -- 决策 --------------------------------------------------------------
 
-    def poll(self, level: float | None = None) -> SessionEvents:
+    def poll(self, level: float | None = None,
+             lost_ms: float | None = None) -> SessionEvents:
         """问"现在该干什么"。
 
-        level 由调用方给出（它才持有 MicRecorder），本层不碰硬件。
+        level / lost_ms 都由调用方给出（它才持有 MicRecorder），本层不碰硬件。
+        丢帧的节流也在这里做：调用方每 60ms 轮询一次，不节流的话阈值判断
+        会被高频触发，而 lost_ms 是累计量、只会越滚越大。
         """
         if self._finished:
             return SessionEvents(level=level)
@@ -106,6 +112,15 @@ class RecorderSession:
             if active is not None:
                 ev.partial = active
             self._last_partial = now
+
+        # 用 None 而不是 0.0 当初始值：0.0 会让"首次检查"也过节流，
+        # 而首次恰恰是最该检查的一次（丢帧可能从第一轮就开始了）。
+        if lost_ms is not None and (
+            self._last_loss_check is None
+            or now - self._last_loss_check >= LOSS_REPORT_INTERVAL_S
+        ):
+            self._last_loss_check = now
+            ev.audio_lost_ms = self.poll_loss(lost_ms)
 
         return ev
 

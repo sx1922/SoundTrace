@@ -12,7 +12,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from session import LOSS_WARN_MS, RecorderSession, SessionEvents
+from session import (
+    LOSS_REPORT_INTERVAL_S,
+    LOSS_WARN_MS,
+    RecorderSession,
+    SessionEvents,
+)
 from vad import VADConfig
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -216,6 +221,76 @@ def test_loss_state_lives_in_session_not_thread():
     """
     s = RecorderSession()
     assert s.poll_loss(500.0) == 500.0   # 不依赖任何外部对象
+
+
+# -- 丢帧经由 poll() 交付 ----------------------------------------------------
+
+
+def test_poll_carries_loss_into_events():
+    """丢帧要跟着 poll() 的结果一起出去。
+
+    以前这里有个坑：SessionEvents.audio_lost_ms 字段存在、__bool__ 里也
+    判断了它，但 poll_loss 只返回一个裸 float，字段从来没被赋过值——
+    于是 __bool__ 对它的判断是死代码。现在由 poll() 统一填。
+    """
+    clock = FakeClock()
+    s = RecorderSession(clock=clock)
+    ev = s.poll(lost_ms=500.0)
+    assert ev.audio_lost_ms == 500.0
+    assert ev, "有丢帧时事件对象必须为真，否则上层会当成'没事发生'"
+
+
+def test_poll_loss_not_reported_when_absent():
+    """不传 lost_ms（静态检查、其它调用方）时不该凭空报丢帧。"""
+    s = RecorderSession()
+    assert s.poll().audio_lost_ms == 0.0
+
+
+def test_poll_loss_below_threshold_stays_zero():
+    s = RecorderSession()
+    assert s.poll(lost_ms=LOSS_WARN_MS - 1).audio_lost_ms == 0.0
+
+
+def test_poll_loss_reported_once_across_polls():
+    """一次录音只提示一次，且由 poll() 的节流控制。"""
+    clock = FakeClock()
+    s = RecorderSession(clock=clock)
+    first = s.poll(lost_ms=500.0)
+    assert first.audio_lost_ms == 500.0
+
+    clock.advance(LOSS_REPORT_INTERVAL_S + 0.1)
+    assert s.poll(lost_ms=800.0).audio_lost_ms == 0.0, "同一次录音只应提示一次"
+
+    clock.advance(LOSS_REPORT_INTERVAL_S + 0.1)
+    assert s.poll(lost_ms=1200.0).audio_lost_ms == 0.0
+
+
+def test_poll_loss_throttled_within_interval():
+    """节流：间隔内的重复上报要被吃掉。
+
+    调用方每 60ms 轮询一次，lost_ms 又是累计量，不节流的话
+    每轮都会去问一次阈值，白白打断节流逻辑。
+    """
+    clock = FakeClock()
+    s = RecorderSession(clock=clock)
+    # 首次必须放行——丢帧可能从第一轮就开始了
+    assert s.poll(lost_ms=500.0).audio_lost_ms == 500.0
+
+    s.reset_loss_flag()             # 只留节流，去掉"一次提示"的限制
+    clock.advance(LOSS_REPORT_INTERVAL_S * 0.5)
+    assert s.poll(lost_ms=900.0).audio_lost_ms == 0.0, "节流期内不该重复上报"
+
+    clock.advance(LOSS_REPORT_INTERVAL_S * 0.6)
+    assert s.poll(lost_ms=1200.0).audio_lost_ms == 1200.0, "节流期过后应该放行"
+
+
+def test_poll_loss_flag_survives_reset():
+    """reset 后能再次提示——单次录音内不会调，跨会话复用时会。"""
+    s = RecorderSession()
+    assert s.poll_loss(500.0) == 500.0
+    assert s.poll_loss(500.0) == 0.0
+    s.reset_loss_flag()
+    assert s.poll_loss(600.0) == 600.0
 
 
 # -- 真实音频 ---------------------------------------------------------------

@@ -46,7 +46,8 @@ from live_cursor import EmptyStateOverlay, LiveInsertionMark
 from settings import SettingsDialog
 from widgets import LevelMeter
 from transcribe import Output, Transcriber
-from vad import Segmenter, VADConfig
+from session import RecorderSession
+from vad import VADConfig
 
 SAMPLE_RATE = 16000
 POLL_INTERVAL_IDLE = 0.06   # 秒
@@ -68,19 +69,21 @@ class Signals(QObject):
 
 
 class AudioWorker(QObject):
-    """录音 + VAD 循环，跑在自己的 QThread 里。"""
+    """录音 + VAD 循环，跑在自己的 QThread 里。
 
-    def __init__(self, recorder: MicRecorder, segmenter: Segmenter,
-                 transcriber: Transcriber, live_interval_ms: int, sig: Signals):
+    这里只负责搬字节、发信号。"切段、预览调度、丢帧告警该不该触发"这些
+    判断全在 RecorderSession 里，那一层不依赖 Qt，所以能被测试完整覆盖。
+    本类必须只做转发——判断留在这里就等于留在了测试之外。
+    """
+
+    def __init__(self, recorder: MicRecorder, session: RecorderSession,
+                 transcriber: Transcriber, sig: Signals):
         super().__init__()
         self.recorder = recorder
-        self.segmenter = segmenter
+        self.session = session
         self.transcriber = transcriber
-        self.live_interval = live_interval_ms / 1000.0
         self.sig = sig
         self._running = False
-        # 每次会话只提醒一次，状态属于这次录音而不是窗口
-        self._loss_warned = False
 
     def stop(self) -> None:
         self._running = False
@@ -96,46 +99,32 @@ class AudioWorker(QObject):
             return
 
         pos = 0
-        last_partial = 0.0
-        last_state = ""
-        last_loss_check = 0.0
         try:
             while self._running:
                 data, pos = self.recorder.ring.read_since(pos)
                 if data.size:
-                    for seg in self.segmenter.feed(data):
-                        self.transcriber.submit_final(seg)
+                    self.session.push_audio(data)
 
-                    state = self.segmenter.state.value
-                    if state != last_state:
-                        self.sig.vad_state.emit(state)
-                        last_state = state
+                ev = self.session.poll(level=self.recorder.level,
+                                       lost_ms=self.recorder.lost_ms)
+                for seg in ev.finals:
+                    self.transcriber.submit_final(seg)
+                if ev.partial is not None:
+                    self.transcriber.submit_partial(ev.partial)
+                if ev.vad_state:
+                    self.sig.vad_state.emit(ev.vad_state)
+                if ev.audio_lost_ms > 0:
+                    self.sig.loss_warn.emit(ev.audio_lost_ms)
+                if ev.level is not None:
+                    self.sig.level.emit(ev.level)
 
-                    now = time.monotonic()
-                    if now - last_partial >= self.live_interval:
-                        active = self.segmenter.peek_active()
-                        if active is not None:
-                            self.transcriber.submit_partial(active)
-                        last_partial = now
-
-                self.sig.level.emit(self.recorder.level)
-                tick = time.monotonic()
-                if tick - last_loss_check >= 1.0:
-                    last_loss_check = tick
-                    lost = self.recorder.lost_ms
-                    if lost > 200 and not self._loss_warned:
-                        # 机器忙，录音有缺口。用户不看到就以为'全录上了'。
-                        # 只能发信号回 GUI 线程：提示和累计都归窗口管，
-                        # worker 直接调窗口的方法会 AttributeError。
-                        self._loss_warned = True
-                        self.sig.loss_warn.emit(lost)
                 # 采集是 PortAudio 自己的线程在跑，这里只是轮询环形缓冲。
                 # 醒得再勤也不会让音频更准，只是白烧 CPU——老电脑上这一点
                 # 在意明显。60ms 相对 1.2 秒的预览间隔完全够。
                 time.sleep(POLL_INTERVAL_IDLE)
         finally:
             # 停录音时把没说完的段定稿，否则最后半句会丢
-            for seg in self.segmenter.flush():
+            for seg in self.session.finish().finals:
                 self.transcriber.submit_final(seg)
             self.recorder.stop()
             self.sig.ended.emit()
@@ -617,7 +606,9 @@ class MainWindow(QMainWindow):
 
         vcfg = VADConfig.from_config(self.cfg)
         vcfg.aggressiveness = self.sens_slider.value()  # 滑块优先于配置文件
-        segmenter = Segmenter(vcfg)
+        # 会话对象每次录音新建：它的丢帧提示标志、预览节流都是"本次录音"的
+        # 状态，复用会把上一次的状态带过来。
+        session = RecorderSession(vcfg, live_interval_s=self.cfg.live_interval_ms / 1000.0)
         recorder = MicRecorder(device_index=dev_idx)
 
         self.transcriber.language = self._language_code()
@@ -625,7 +616,7 @@ class MainWindow(QMainWindow):
 
         self.audio_thread = QThread(self)
         self.audio_worker = AudioWorker(
-            recorder, segmenter, self.transcriber, self.cfg.live_interval_ms, self.sig
+            recorder, session, self.transcriber, self.sig
         )
         self.audio_worker.moveToThread(self.audio_thread)
         self.audio_thread.started.connect(self.audio_worker.run)
