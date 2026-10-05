@@ -27,9 +27,12 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 ISCC_CANDIDATES = [
-    Path.home() / "AppData/Local/Programs/Inno Setup 7/ISCC.exe",
     Path("C:/Program Files (x86)/Inno Setup 7/ISCC.exe"),
     Path("C:/Program Files/Inno Setup 7/ISCC.exe"),
+    Path("C:/Program Files (x86)/Inno Setup 6/ISCC.exe"),
+    Path("C:/Program Files/Inno Setup 6/ISCC.exe"),
+    Path.home() / "AppData/Local/Programs/Inno Setup 7/ISCC.exe",
+    Path.home() / "AppData/Local/Programs/Inno Setup 6/ISCC.exe",
 ]
 
 
@@ -50,6 +53,11 @@ def run(cmd: list[str], title: str) -> bool:
 
 
 def find_iscc() -> Path | None:
+    # PATH 里优先。CI 用 choco 装 Inno Setup，落在哪取决于版本和镜像，
+    # 写死路径等于赌它没换。
+    found = shutil.which("iscc") or shutil.which("ISCC.exe")
+    if found:
+        return Path(found)
     for p in ISCC_CANDIDATES:
         if p.is_file():
             return p
@@ -119,7 +127,12 @@ def main() -> int:
         return 1
 
     sync_version()
-    check_icon()
+    # 原来这里把返回值丢了，check_icon 的存在意义（避免"删了旧图结果
+    # 安装包构建失败"这种绕远路的报错）就变成了摆设。
+    if not check_icon():
+        print("\n[FAIL] 缺 assets/SoundTrace.ico，无法出安装包。"
+              "用 tools/make_icon.py 生成后重试。")
+        return 1
 
     try:
         import PyInstaller  # noqa: F401
@@ -163,7 +176,13 @@ def main() -> int:
     if not run([str(iscc), "SoundTrace.iss"], "构建安装包"):
         return 1
 
-    setups = sorted((ROOT / "installer").glob("*.exe"))
+    # 按版本号排，不能用 sorted()：字符串比较下 "Setup-0.1.10.exe"
+    # 排在 "Setup-0.1.9.exe" 前面，sorted()[-1] 会挑中旧的。
+    def _ver_key(p: Path) -> tuple[int, ...]:
+        m = re.search(r"Setup-([0-9]+(?:\.[0-9]+)*)\.exe$", p.name)
+        return tuple(int(x) for x in m.group(1).split(".")) if m else (0,)
+
+    setups = sorted((ROOT / "installer").glob("*.exe"), key=_ver_key)
     if setups:
         p = setups[-1]
         print(f"\n[ ok ] 安装包   {p}  ({human(p.stat().st_size)})")

@@ -64,11 +64,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q
 
-      - name: 构建 exe
-        run: python -m PyInstaller SoundTrace.spec --noconfirm --clean
-
-      - name: 构建安装包
-        run: iscc SoundTrace.iss
+      # 走 build.py，不要直接调 PyInstaller。
+      # 直调会跳过三件事，而它们都直接影响发布件：
+      #   trim_dist()   —— 裁掉没用到的 Qt 模块和插件，不裁的包大 ~45MB
+      #   sync_version()—— branding.APP_VERSION 与 .iss 的版本同步
+      #   check_icon()  —— 缺图标时 .iss 的通配符匹配不到文件
+      # 测试上面已经单独跑过，这里跳过重复执行。
+      - name: 构建 exe 与安装包
+        run: python build.py --skip-tests
 
       - name: 确认产物
         shell: pwsh

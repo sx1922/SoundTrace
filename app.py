@@ -458,7 +458,8 @@ class MainWindow(QMainWindow):
             self._start_model_load()
             return
 
-        # 打包后的 exe 里没有 tools/fetch_assets.py，得能在程序内下载
+        # 程序内直接下载，不依赖 tools/fetch_assets.py —— 打包后安装目录里
+        # 没有 Python 解释器，那边的脚本一个也跑不起来。
         detail = "将下载约 500MB（运行时 40MB + 模型 466MB），只需一次，之后完全离线运行。"
         if platforms.is_frozen():
             QMessageBox.information(

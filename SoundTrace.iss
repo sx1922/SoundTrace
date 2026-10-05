@@ -60,9 +60,10 @@ Name: "desktopicon"; Description: "{cm:LaunchApp}"; GroupDescription: "{cm:Addit
 [Files]
 Source: "{#SourceDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 源码工具链跟着装，自检和换模型时用得上
-Source: "tools\*.py"; DestDir: "{app}\tools"; Flags: ignoreversion
-Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
+; 源码工具链不再随包安装。原来装 tools\*.py + requirements.txt 是无用功：
+; 安装目录里没有 Python 解释器，而项目模块在 {app}\_internal 而不是 {app}，
+; 所有工具的 sys.path.insert(0, ROOT) 都指错了地方，一个也跑不起来。
+; 真要自检或换模型，请用源码仓库跑 tools\fetch_assets.py。
 ; 图标用通配符而不是硬引用：换图标时先删旧的也不会让构建失败
 Source: "assets\*.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; 注意：models\ 和 vendor\ 不在这里，首运行下载
