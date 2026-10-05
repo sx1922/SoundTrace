@@ -139,7 +139,7 @@ class ModelLoader(QObject):
     Python 的 GC 在 GUI 线程上释放旧模型，就会和这里的加载撞上。
     """
 
-    loaded = Signal(str)   # whisper.cpp 版本
+    loaded = Signal(str, int, str)   # whisper.cpp 版本, 加载代号, 模型名
     failed = Signal(str)
     trigger = Signal()     # 跨线程请求加载
     release = Signal()     # 跨线程请求释放当前模型
@@ -147,12 +147,22 @@ class ModelLoader(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._pending: Transcriber | None = None
+        self._pending_token = 0
         self._current: Transcriber | None = None
         self.trigger.connect(self.run)
         self.release.connect(self._release)
 
-    def submit(self, transcriber: Transcriber) -> None:
+    def submit(self, transcriber: Transcriber) -> int:
+        """排一个加载请求，返回本次的代号。
+
+        代号是必需的：加载要好几秒，用户在这期间完全可以再点一次。
+        没有代号的话，先提交的那个加载完成时照样会发 loaded，
+        把已经换掉的模型又装回去，状态栏还报着新模型的名字——
+        实际装的和说的不是一回事。
+        """
+        self._pending_token += 1
         self._pending = transcriber
+        return self._pending_token
 
     @Slot()
     def _release(self) -> None:
@@ -163,6 +173,7 @@ class ModelLoader(QObject):
     @Slot()
     def run(self) -> None:
         pending = self._pending
+        token = self._pending_token
         self._pending = None
         if pending is None:
             return
@@ -173,9 +184,10 @@ class ModelLoader(QObject):
             # 先建后放则两个 context 可以共存，实测来回切没问题。
             # 代价是切换瞬间两个模型同时占着显存/内存，8G 卡上完全够。
             version = pending.load_blocking()
+            name = pending.model_path.name
             old = self._current
             self._current = pending
-            self.loaded.emit(version)
+            self.loaded.emit(version, token, name)
             if old is not None:
                 old.stop()   # 新模型确认可用后才丢旧的
         except Exception as e:
@@ -206,6 +218,9 @@ class MainWindow(QMainWindow):
         self.loader_thread: QThread | None = None
         self.loader: ModelLoader | None = None
         self._loading_model = ""
+        # 最近一次发起的模型加载代号。加载完成信号带着自己的代号回来，
+        # 对不上就丢弃——否则过期的加载会覆盖掉用户后来的选择。
+        self._load_token = 0
         self._device_pref = self.cfg.device
         self._vad_state = "idle"
 
@@ -594,7 +609,7 @@ class MainWindow(QMainWindow):
             self.loader.failed.connect(self._on_model_failed)
             self.loader_thread.start()
 
-        self.loader.submit(tr)
+        self._load_token = self.loader.submit(tr)
         self.loader.trigger.emit()
 
     # -- 录音控制 ----------------------------------------------------------
@@ -894,15 +909,20 @@ class MainWindow(QMainWindow):
             speed = "快于实时" if rtf < 1 else f"慢于实时 {rtf:.1f}倍"
             self.rtf_label.setText(f"速度 {1 / rtf:.1f}x {speed}")
 
-    @Slot(str)
-    def _on_model_loaded(self, version: str) -> None:
+    @Slot(str, int, str)
+    def _on_model_loaded(self, version: str, token: int, name: str) -> None:
+        # 加载要好几秒。这期间用户可以又点了别的模型，于是会有"过期的"
+        # 加载完成信号后到。代号对不上就说明装好的不是当前要的那个——
+        # 照单全收会把已经换掉的模型又装回去，状态栏还报着新模型的名字。
+        if token != self._load_token:
+            return
         # 加载成功才把 self.transcriber 指过去
         self.busy_bar.setVisible(False)
         self.transcriber = self.loader._current
         self._loading_model = ""
         self.start_btn.setEnabled(True)
         self._set_controls_enabled(True)
-        name = self.cfg.model
+        # 用信号带回来的模型名，不要读 cfg.model：它可能已经被下一次选择改了
         self._on_status(f"就绪 · {name} · whisper.cpp {version} · {self.device_info.label}")
 
     @Slot(str)

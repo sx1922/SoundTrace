@@ -124,26 +124,41 @@ def _has_cjk(text: str) -> bool:
 # 幻觉短语识别是唯一有效的防线。这层必须在繁简转换之后做，
 # 否则匹配不到 "(字幕:貝爾)" 这种繁体输出。
 
-# 中文幻觉短语，按原文匹配
-_HALLUCINATION_CJK = (
-    "谢谢观看", "感谢观看", "请不吝点赞", "订阅", "转发", "打赏", "明镜与点点栏目",
-    "字幕由", "字幕志愿者", "请加入", "未经许可", "不得转载", "请大家支持",
+# 幻觉短语分三层。混在一起用子串匹配会误杀真实口语——旧版本里
+# 「订阅」「转发」「打赏」「music」都在子串表里，用户真说"这个频道需要订阅"
+# 会被整句丢掉，而且只在状态栏多一个"过滤幻觉 1"，用户根本察觉不到。
+
+# 1) 特征短语：足够独特、不会出现在正常说话里，子串匹配安全。
+#    注意"谢谢观看""thanks for watching"不在这一层——用户完全可能说
+#    "thanks for watching the demo"，子串匹配会连着整句一起吞掉。
+_HALLUCINATION_SUB_CJK = (
+    "字幕由", "字幕志愿者", "明镜与点点栏目", "点个关注", "一键三连",
+    "请不吝点赞", "喜欢的话记得三连", "未经许可不得转载", "未经授权",
+)
+_HALLUCINATION_SUB_EN = (
+    "subtitles by", "amara.org", "for more information,",
+    "this video has been", "translated by", "copyright infringement",
 )
 
-# 英文幻觉短语，按小写后的文本匹配
-_HALLUCINATION_EN = (
+# 2) 常见幻觉整句 / 整段短词。只有"整段就这些"时才删。
+_HALLUCINATION_EXACT = (
+    "谢谢观看", "感谢观看", "谢谢", "感谢", "谢谢大家", "感谢大家",
+    "订阅", "转发", "打赏", "请加入", "请大家支持", "请一键三连",
     "thank you for watching", "thanks for watching", "please subscribe",
-    "thank you very much", "music", "applause", "clapping", "subtitles by",
-    "amara.org", "bye.", "for more information,", "www.",
+    "thank you very much", "music", "applause", "clapping", "silence",
+    "inaudible", "thank you", "thanks", "bye", "www.",
 )
 
-# 幻觉的典型外形：整段被括号包起来，或者带"字幕:""音乐:"这类标签
+# 3) 幻觉的典型外形：整段被括号包起来，或者带"字幕:""音乐:"这类标签
 _HALLUCINATION_RES = (
     re.compile(r"[（(]\s*字幕\s*[:：]"),
     re.compile(r"[（(]\s*(音乐|音樂|歌曲|歌聲|歌声)\s*[)）]?"),
     re.compile(r"^\s*[（(][^）)]{0,24}[）)]\s*$"),
     re.compile(r"^[\s\W]*$"),   # 纯标点
 )
+
+# 整段匹配前先剥掉的包装：引号、括号、空白、常见的结尾标点
+_TRIM_CHARS = " \t\r\n　\"“”‘’「」『』（）()[]【】,.。!！?？、;；:："
 
 
 def is_hallucination(text: str) -> bool:
@@ -159,9 +174,29 @@ def is_hallucination(text: str) -> bool:
         if rx.search(t):
             return True
     lowered = t.lower()
-    if any(p in lowered for p in _HALLUCINATION_EN):
+    if any(p in lowered for p in _HALLUCINATION_SUB_EN):
         return True
-    return any(p in t for p in _HALLUCINATION_CJK)
+    if any(p in t for p in _HALLUCINATION_SUB_CJK):
+        return True
+
+    # 常见短语：整段剥掉标点后必须**完全等于**其中之一才算幻觉。
+    # 用子串匹配会吃掉真实句子（"这个频道需要订阅" /
+    # "thanks for watching the demo" 都会被吞）。噪声幻觉的形态恰恰是
+    # "整段就这么点内容"，所以整段相等已经足够区分。
+    core = t.strip(_TRIM_CHARS).strip()
+    if not core:
+        return False
+    if core in _HALLUCINATION_EXACT or core.lower() in _HALLUCINATION_EXACT:
+        return True
+
+    # 另一种常见形态：整段由若干幻觉词拼成，如 "订阅，转发，打赏"。
+    # 规则是"每个词元都在表里"——"这个频道需要订阅" 里含有非幻觉词元，
+    # 因此能保住；"订阅，转发，打赏" 全是，才拦。
+    tokens = [w for w in re.split(r"[\s,，。、;；!！?？:：]+", core) if w]
+    if tokens and all(w in _HALLUCINATION_EXACT or w.lower() in _HALLUCINATION_EXACT
+                      for w in tokens):
+        return True
+    return False
 
 
 def is_suspicious(text: str, duration_ms: int = 0) -> bool:
@@ -183,5 +218,9 @@ def is_suspicious(text: str, duration_ms: int = 0) -> bool:
         return False
     cjk = sum(1 for c in t if "㐀" <= c <= "鿿")
     digits = sum(1 for c in t if c.isdigit())
+    # 拉丁字母也要算。语言是可切换的（config.language 支持 en），
+    # 只数中日韩和数字的话，"OK" / "Right" / "Sure" 全都会被当成碎片丢掉，
+    # 而这些是用户真说出来的词。
+    latin = sum(1 for c in t if c.isascii() and c.isalpha())
     # 录了将近一秒以上，却只有零星几个字/数字，基本就是碎片
-    return cjk + digits < 2 and len(t) < 6
+    return cjk + digits + latin < 2 and len(t) < 6

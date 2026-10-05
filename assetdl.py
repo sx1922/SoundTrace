@@ -121,7 +121,7 @@ class AssetFetcher:
             z.extractall(dest)
         zip_path.unlink(missing_ok=True)
 
-        if not (dest / "Release" / platforms.current().whisper_path_name).is_file():
+        if not (dest / "Release" / plat.whisper_path_name).is_file():
             raise RuntimeError("解压后没找到主库，资产结构可能变了")
 
         if self.with_cuda and a.get("cuda"):
@@ -132,6 +132,32 @@ class AssetFetcher:
             with zipfile.ZipFile(czip) as z:
                 z.extractall(cdest)
             czip.unlink(missing_ok=True)
+
+            # CUDA 构建包里不含 CUDA runtime（cudart）。缺了它，驱动再新也
+            # 起不来 CUDA，而且失败是**静默**的：ggml 解析不到同目录下的
+            # cublas64_12.dll / cudart64_12.dll，只在日志里留一行 "no GPU
+            # found" 就悄悄退回 CPU——用户会以为是驱动问题。
+            #
+            # 这一步原来根本没做：ASSETS 里声明了 cudart，却从没被读过。
+            # 于是装 exe 的 CUDA 用户永远拿不到它。
+            cudart = a.get("cudart")
+            if not cudart:
+                raise RuntimeError("该平台没有配套的 CUDA runtime 包，CUDA 无法使用")
+            czip2 = self.root / "vendor" / "cudart.zip"
+            self._download(f"{BASE}/{cudart}", czip2, "补齐 CUDA runtime DLL")
+            release = cdest / "Release"
+            release.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(czip2) as z:
+                z.extractall(release)
+            czip2.unlink(missing_ok=True)
+            # 下载成功但解压不出 DLL，等于没补上——必须在交付前确认，
+            # 否则又是一轮"看着装好了、实际静默退回 CPU"
+            ext = platforms.current().lib_ext
+            if not list(release.glob(f"cudart*.{ext}")):
+                raise RuntimeError(
+                    "CUDA runtime 包里没有 cudart DLL，资产结构可能变了。"
+                    "请手动从 whisper.cpp release 下载 cudart 并解压到 "
+                    f"{release}")
 
     def _fetch_model(self) -> None:
         fname = MODELS.get(self.model)

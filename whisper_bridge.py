@@ -21,22 +21,10 @@ VENDOR_DIR = ROOT / "vendor" / "whisper" / "Release"
 
 WHISPER_SAMPLING_GREEDY = 0
 
-# 静音幻觉常见的固定短语，识别结果整段命中这些内容时直接丢弃。
-HALLUCINATION_MARKERS = (
-    "thank you for watching",
-    "thanks for watching",
-    "thank you very much",
-    "please subscribe",
-    "subtitles by",
-    "amara.org",
-    "字幕由",
-    "谢谢观看",
-    "感谢观看",
-    "请不吝点赞",
-    "订阅",
-    "转发",
-    "打赏",
-)
+# 幻觉短语表在 text_norm 里，不在这里。早期这里也放了一份，两处内容
+# 各不相同且都会执行一遍，还都记到同一个 dropped_hallucinations 计数上。
+# 而且这一份跑在未归一化的原始文本上——幻觉输出常带繁体（"(字幕:貝爾)"），
+# 匹配不到，等于白放。
 
 
 class WhisperError(RuntimeError):
@@ -453,9 +441,11 @@ class WhisperEngine:
             segments.append(seg)
             parts.append(text)
 
+        # 幻觉过滤不在这里做。这里拿到的还是**未归一化的原始文本**，
+        # 繁体、繁简标点都没处理，而幻觉输出恰恰常带繁体（实测 "(字幕:貝爾)"），
+        # 在这里匹配必然漏。真相源是 text_norm.is_hallucination，
+        # 由 Transcriber._process 在归一化之后统一调用。
         joined = "".join(parts).strip()
-        if _is_hallucination(joined):
-            joined = ""
 
         return Result(
             text=joined,
@@ -464,15 +454,4 @@ class WhisperEngine:
             audio_s=pcm.size / 16000.0,
             lang_id=self._dll.whisper_full_lang_id(self._ctx),
         )
-
-
-def _is_hallucination(text: str) -> bool:
-    """过滤 whisper 对静音/噪声的经典幻觉输出。"""
-    if not text:
-        return True
-    stripped = text.strip().strip("。．.！!？?、,")
-    if not stripped:
-        return True
-    lowered = stripped.lower()
-    return any(m in lowered for m in HALLUCINATION_MARKERS)
 

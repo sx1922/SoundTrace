@@ -92,8 +92,14 @@ class TestSuspicious:
         assert not is_suspicious("好", duration_ms=300)
 
     def test_long_audio_garbage_is_flagged(self):
-        """录了 1.2 秒只出 "TR"，是典型的截断残段。"""
-        assert is_suspicious("TR", duration_ms=1200)
+        """录了 1.2 秒只出零星标点/数字，是典型的截断残段。
+
+        这里不再拿 "TR" 当例子：is_suspicious 现在也数拉丁字母，两字母的
+        噪声碎片和用户真说的 "OK" / "No" 在形状上分不开，刻意保住后者。
+        理由见 tests/test_hallucination.py。
+        """
+        assert is_suspicious("1", duration_ms=1200)
+        assert is_suspicious("。", duration_ms=1200)
 
     def test_empty_is_flagged(self):
         assert is_suspicious("", duration_ms=1000)
