@@ -66,6 +66,8 @@ class Transcriber:
         self._inflight_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._on_output = None
+        self._on_error = None
         self._finalized_upto = 0
 
         # 统计
@@ -92,18 +94,50 @@ class Transcriber:
     def start(self, on_output: callable, on_error: callable) -> None:
         if self._engine is None:
             raise RuntimeError("模型尚未加载，请先调用 load_blocking()")
+        # 回调存在实例上而不是当参数传给线程：重入时新线程可能根本不会起，
+        # 这时回调必须已经是新的，否则旧线程还在往过期的窗口上发信号。
+        self._on_output = on_output
+        self._on_error = on_error
+        # 重入保护：再起一条线程的话，两条会同时对同一个 whisper context
+        # 调 whisper_full，而它不是线程安全的——直接段错误。
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(on_output, on_error), name="transcribe", daemon=True
+            target=self._run, name="transcribe", daemon=True
         )
         self._thread.start()
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop_worker(self, timeout: float = 5.0) -> bool:
+        """只停推理线程，保留已加载的引擎。
+
+        一次录音结束就该调它：线程留着不动，下次 start() 会和它抢同一个
+        context。返回值 False 表示线程在 timeout 内没退出——此时**不要**
+        释放引擎，那会造成 use-after-free。
+
+        stop() 才是"连模型一起卸载"，只在切换模型和退出程序时用。
+        """
         self._stop.set()
+        if self._thread is None:
+            return True
+        self._thread.join(timeout=timeout)
+        alive = self._thread.is_alive()
+        if not alive:
+            self._thread = None
+        return not alive
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """停线程并卸载模型。仅供切换模型 / 退出程序使用。"""
+        self._stop.set()
+        joined = True
         if self._thread:
             self._thread.join(timeout=timeout)
-            self._thread = None
-        if self._engine:
+            # join 超时说明线程还在 whisper_full 里，此时 free() 就是
+            # use-after-free。宁可漏释放，也不能崩在别人正读着的内存上。
+            joined = not self._thread.is_alive()
+            if joined:
+                self._thread = None
+        if self._engine and joined:
             self._engine.free()
             self._engine = None
 
@@ -141,16 +175,12 @@ class Transcriber:
         return self._last_elapsed_s < self.live_interval_s * 0.8
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        self._stop.set()
-        # 唤醒等待中的线程
-        try:
-            self._final_q.put_nowait(Task(None, "stop"))
-        except Exception:
-            pass
         self.stop(timeout=timeout)
 
     def busy(self) -> bool:
-        return not self._final_q.empty() or self._inflight
+        with self._inflight_lock:
+            inflight = self._inflight
+        return not self._final_q.empty() or inflight
 
     def wait_idle(self, timeout: float = 60.0) -> None:
         """等定稿任务真正跑完，用于停止录音时收尾。
@@ -165,7 +195,7 @@ class Transcriber:
 
     # -- 工作循环 ----------------------------------------------------------
 
-    def _run(self, on_output, on_error) -> None:
+    def _run(self) -> None:
         while not self._stop.is_set():
             task = self._take_task()
             if task is None:
@@ -173,23 +203,36 @@ class Transcriber:
                 continue
             if task.kind == "stop":
                 break
-            with self._inflight_lock:
-                self._inflight = True
+            # finally 而不是逐条出口清理：_process 里有一串提前 return
+            # （空段、幻觉、碎片），漏掉任何一条 _inflight 都会永久卡在
+            # True，wait_idle() 从此再也不会返回。
             try:
-                self._process(task, on_output, on_error)
+                self._process(task, self._on_output, self._on_error)
             finally:
-                with self._inflight_lock:
-                    self._inflight = False
+                self._finish_task()
 
     def _take_task(self) -> Task | None:
-        """定稿优先；没有定稿才取最新的增量。"""
+        """定稿优先；没有定稿才取最新的增量。
+
+        置 _inflight 必须和出队原子地发生：任务一旦离开队列，而 _inflight
+        还没置位，busy() 就会误判成"空闲"，wait_idle() 提前返回，
+        最后一句会在界面上刚说"已停止"之后才吐出来。
+        """
+        task = None
         try:
-            return self._final_q.get_nowait()
+            task = self._final_q.get_nowait()
         except queue.Empty:
-            pass
-        with self._partial_lock:
-            t, self._partial = self._partial, None
-        return t
+            with self._partial_lock:
+                task, self._partial = self._partial, None
+        if task is None:
+            return None
+        with self._inflight_lock:
+            self._inflight = True
+        return task
+
+    def _finish_task(self) -> None:
+        with self._inflight_lock:
+            self._inflight = False
 
     def _process(self, task: Task, on_output, on_error) -> None:
         seg = task.segment

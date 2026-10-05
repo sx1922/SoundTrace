@@ -682,7 +682,13 @@ class MainWindow(QMainWindow):
             return
 
         if self.transcriber:
+            # 顺序不能反：先等队列排空，推理线程还活着才排得掉；
+            # 排空后必须停掉它——线程留着，下次 start() 会和它抢同一个
+            # whisper context，而它不是线程安全的（直接段错误）。
+            # 这里用 stop_worker 而不是 stop()：后者会连引擎一起卸载，
+            # 那样每录一次就要重新加载一次模型。
             self.transcriber.wait_idle(timeout=60)
+            self.transcriber.stop_worker(timeout=5)
         if self._tick_timer:
             self._tick_timer.stop()
             self._tick_timer.deleteLater()
