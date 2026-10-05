@@ -217,6 +217,9 @@ class MainWindow(QMainWindow):
         self.resize(self.cfg.window_w, self.cfg.window_h)
         self._build_ui()
         self._connect()
+        # 必须在 _check_assets 之前：它检查的是 cfg.model_path() 存不存在，
+        # 而这里正是按"本机实际装了哪些模型 + 有多少可用内存"来定用哪个。
+        self._auto_pick_model()
         self._check_assets()
 
     # -- 界面 --------------------------------------------------------------
@@ -506,16 +509,26 @@ class MainWindow(QMainWindow):
 
         老电脑直接加载默认模型会被系统换页，表现为界面卡、录音丢字。
         这里按实测占用表选一个装得下的。
+
+        关键：把 cfg.model 当作 preferred 传下去。用户自己配过就尊重，
+        哪怕内存偏紧也只是提示、不动他的选择——否则"我特意选的小模型"
+        每次启动都会被悄悄改掉。
         """
         have = [p.name for p in self.cfg.available_models()]
         if not have:
             return
-        rec = recommend.recommend(preferred=None, have=have)
+        rec = recommend.recommend(preferred=self.cfg.model, have=have)
         idx = self.model_combo.findData(rec.model)
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
-        self.cfg.model = rec.model
-        self.cfg.save()
+        if rec.model != self.cfg.model:
+            self.cfg.model = rec.model
+            # 启动早期调用，不能用 _persist_config：那会顺带写 device_combo，
+            # 而它这时还没探测过设备，写进去的是下标 0 而不是真实选择。
+            try:
+                self.cfg.save()
+            except Exception:
+                pass
         if rec.tight:
             self._on_status(f"内存偏紧（可用 {rec.available_mb}MB），已选 {rec.model}")
 
