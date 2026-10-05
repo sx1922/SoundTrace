@@ -279,3 +279,83 @@ def test_toast_does_not_touch_status(win):
 def test_toast_texts_exist(win):
     win.copy_all()
     assert "已复制" in win.toast_label.text()
+
+
+# -- 停止录音的收尾不能阻塞界面 ---------------------------------------------
+
+
+class _BusyTranscriber:
+    """一个永远 busy 的假推理器。"""
+
+    def __init__(self, busy=True):
+        self.busy_value = busy
+        self.stopped = False
+        self.waited = False
+        self.dropped_hallucinations = 0
+        self.dropped_fragments = 0
+        self.previews_suppressed = 0
+
+    def busy(self):
+        return self.busy_value
+
+    def stop_worker(self, timeout=5.0):
+        self.stopped = True
+        return True
+
+    def shutdown(self, timeout=5.0):
+        pass
+
+    def wait_idle(self, timeout=60.0):
+        # 关闭程序时 _shutdown 会等队列排空，那里有等待是合理的。
+        # 本组用例验证的是停止录音这条路径不等，靠的是下面两条断言：
+        # _draining 为真、且推理线程尚未被停掉。
+        self.waited = True
+
+
+def test_stream_end_does_not_block_on_busy_queue(win):
+    """队列没排空时，_on_stream_ended 必须立刻返回。
+
+    旧实现在这里直接 wait_idle(60)，慢机器上界面整块冻住 60 秒——
+    而它自己的注释写着"这里绝不能阻塞 GUI 线程"。现在改成轮询。
+    """
+    win.recording = True
+    win._stopping = True
+    win.transcriber = _BusyTranscriber()
+
+    win._on_stream_ended()      # 返回即证明没阻塞
+
+    assert win._draining, "应该进入等待推理排空的状态"
+    assert win.recording is False, "界面应已复位"
+    assert win.start_btn.isEnabled(), "按钮应已恢复可用"
+    assert win.transcriber.stopped is False, "队列没排空时不该停推理线程"
+
+
+def test_finish_runs_once_queue_drains(win):
+    """队列排空后，_try_finish 完成收尾并停掉推理线程。"""
+    win.recording = True
+    win._stopping = True
+    tr = _BusyTranscriber()
+    win.transcriber = tr
+
+    win._on_stream_ended()
+    assert win._draining
+
+    tr.busy_value = False
+    win._try_finish()
+
+    assert win._draining is False
+    assert tr.stopped, "排空后必须停掉推理线程，否则下次录音会和它抢 context"
+
+
+def test_idle_queue_finishes_immediately(win):
+    """队列本来就是空的（麦克风打不开等场景），不该挂定时器。"""
+    win.recording = True
+    win._stopping = True
+    tr = _BusyTranscriber(busy=False)
+    win.transcriber = tr
+
+    win._on_stream_ended()
+
+    assert win._draining is False
+    assert win._drain_timer is None, "空闲时不该起轮询定时器"
+    assert tr.stopped

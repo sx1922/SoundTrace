@@ -210,6 +210,8 @@ class MainWindow(QMainWindow):
         self.rows: list[tuple[int, int, str]] = []  # 导出 srt 用
         self.recording = False
         self._stopping = False   # 已请求停止，等录音线程收尾
+        self._draining = False   # 录音已停，等推理队列排空（非阻塞收尾）
+        self._drain_timer: QTimer | None = None
         self._error = ""         # 本次会话的错误，收尾时别覆盖掉
         self._rec_start = 0.0
         self._tick_timer: QTimer | None = None
@@ -565,7 +567,7 @@ class MainWindow(QMainWindow):
         """切换模型。加载要几秒，必须后台做，且不能正在录音。"""
         if not name or name == self.cfg.model:
             return
-        if self.recording or self._stopping:
+        if self.recording or self._stopping or self._draining:
             QMessageBox.information(self, "正在录音", "先停止录音再切换模型。")
             self._refresh_models()
             return
@@ -576,7 +578,7 @@ class MainWindow(QMainWindow):
 
     def _on_param_changed(self) -> None:
         """参数只在下次录音生效，给个明确提示，别让人以为没反应。"""
-        if self.recording or self._stopping:
+        if self.recording or self._stopping or self._draining:
             return
         self._on_status("参数已改，下次录音生效")
 
@@ -623,7 +625,7 @@ class MainWindow(QMainWindow):
     def start_recording(self) -> None:
         # 按钮和快捷键可能几乎同时触发，没有这层保护会起两个录音线程，
         # 旧的被引用覆盖掉、再也停不下来
-        if self.recording or self._stopping:
+        if self.recording or self._stopping or self._draining:
             return
         if self.transcriber is None or self.transcriber._engine is None:
             what = f"（正在加载 {self._loading_model}）" if self._loading_model else ""
@@ -691,7 +693,7 @@ class MainWindow(QMainWindow):
         连绘制都来不及。改成只发停止信号，界面复位交给
         _on_stream_ended 收尾。
         """
-        if not self.recording or self._stopping:
+        if not self.recording or self._stopping or self._draining:
             return
         self._stopping = True
         self.start_btn.setEnabled(False)
@@ -705,51 +707,55 @@ class MainWindow(QMainWindow):
             self.audio_thread.quit()
 
     def _on_stream_ended(self) -> None:
-        """录音线程收尾，等推理队列跑空后恢复界面。"""
-        if not self.recording and not self._stopping:
+        """录音线程收尾。
+
+        这里绝不能等推理跑完：wait_idle 内部是自旋等待，慢机器上能到
+        60 秒，界面会整块冻住（连"正在处理最后一段…"都来不及重绘）。
+        所以拆成两步——先把界面复位，再用一个定时器轮询推理是否结束，
+        结束了才做剩下的收尾。
+        """
+        if not self.recording and not self._stopping and not self._draining:
             # 麦克风打开失败时也会走这里，但那时不该覆盖错误信息
             return
 
+        self._reset_recording_ui()
+        self._draining = True
+
+        if self.transcriber and self.transcriber.busy():
+            self._on_status("正在处理最后一段…")
+            self._drain_timer = QTimer(self)
+            self._drain_timer.timeout.connect(self._try_finish)
+            self._drain_timer.start(120)
+            return
+        self._finish_recording()
+
+    def _try_finish(self) -> None:
+        """轮询推理队列。空闲了才收尾。"""
+        if self.transcriber and self.transcriber.busy():
+            return
+        self._finish_recording()
+
+    def _finish_recording(self) -> None:
+        if self._drain_timer:
+            self._drain_timer.stop()
+            self._drain_timer.deleteLater()
+            self._drain_timer = None
+        self._draining = False
+
         if self.transcriber:
-            # 顺序不能反：先等队列排空，推理线程还活着才排得掉；
-            # 排空后必须停掉它——线程留着，下次 start() 会和它抢同一个
+            # 队列已排空，停掉推理线程：它留着，下次 start() 会和它抢同一个
             # whisper context，而它不是线程安全的（直接段错误）。
-            # 这里用 stop_worker 而不是 stop()：后者会连引擎一起卸载，
+            # 用 stop_worker 而不是 stop()：后者会连引擎一起卸载，
             # 那样每录一次就要重新加载一次模型。
-            self.transcriber.wait_idle(timeout=60)
+            # 这里不会真的等 5 秒——线程正停在 30ms 的空转轮询上。
             self.transcriber.stop_worker(timeout=5)
-        if self._tick_timer:
-            self._tick_timer.stop()
-            self._tick_timer.deleteLater()
-            self._tick_timer = None
-        if getattr(self, "peak_timer", None):
-            self.peak_timer.stop()
-            self.peak_timer.deleteLater()
-            self.peak_timer = None
-        self.level_bar.reset()
+
         if self.audio_thread:
+            # ended 是在 run() 的 finally 里发的，run() 随即返回，
+            # 所以这个 wait 实际上不会等。
             self.audio_thread.wait(5000)
             self.audio_thread = None
         self.audio_worker = None
-
-        self.recording = False
-        self._stopping = False
-        self.setWindowTitle(self._base_title)
-        self.start_btn.setText("开始录音")
-        self.start_btn.setStyleSheet("")
-        self.start_btn.setEnabled(True)
-        self._set_controls_enabled(True)
-        self._on_vad_state("idle")
-        self.level_bar.reset()
-        self.elapsed_label.setText("")
-        self.live_mark.set_active(False)
-        self.rec_pill.setVisible(False)
-        # 预览只是临时结果，停止时直接丢掉。把它拼进状态栏是没意义的：
-        # 停止录音时 Segmenter.flush() 已经把没说完的段走正常识别定稿了，
-        # 剩下的预览要么已被定稿覆盖，要么是没通过过滤的碎片
-        # （实测安静环境下残留过 "（字幕：贝尔）" 这种幻觉）。
-        self.preview.clear()
-        self.preview_box.setVisible(False)
 
         if self._error:
             # 出过错就保留错误信息，别用"已停止"盖掉
@@ -768,6 +774,37 @@ class MainWindow(QMainWindow):
             if self.transcriber.previews_suppressed:
                 bits.append(f"跳过预览 {self.transcriber.previews_suppressed}")
         self._on_status(" · ".join(bits))
+
+    def _reset_recording_ui(self) -> None:
+        """把"正在录音"的界面状态复位。不含任何等待。"""
+        if self._tick_timer:
+            self._tick_timer.stop()
+            self._tick_timer.deleteLater()
+            self._tick_timer = None
+        if getattr(self, "peak_timer", None):
+            self.peak_timer.stop()
+            self.peak_timer.deleteLater()
+            self.peak_timer = None
+        self.level_bar.reset()
+
+        self.recording = False
+        self._stopping = False
+        self.setWindowTitle(self._base_title)
+        self.start_btn.setText("开始录音")
+        self.start_btn.setStyleSheet("")
+        self.start_btn.setEnabled(True)
+        self._set_controls_enabled(True)
+        self._on_vad_state("idle")
+        self.level_bar.reset()
+        self.elapsed_label.setText("")
+        self.live_mark.set_active(False)
+        self.rec_pill.setVisible(False)
+        # 预览只是临时结果，停止时直接丢掉。把它拼进状态栏是没意义的：
+        # 停止录音时 RecorderSession.finish() 已经把没说完的段走正常识别定稿了，
+        # 剩下的预览要么已被定稿覆盖，要么是没通过过滤的碎片
+        # （实测安静环境下残留过 "（字幕：贝尔）" 这种幻觉）。
+        self.preview.clear()
+        self.preview_box.setVisible(False)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         # 录音中这些都不能改：已经开了线程，中途改不会生效，
@@ -1014,7 +1051,7 @@ class MainWindow(QMainWindow):
         if not text:
             QMessageBox.information(self, "没有内容", "还没有可导出的文本。")
             return
-        if self.recording or self._stopping:
+        if self.recording or self._stopping or self._draining:
             QMessageBox.information(
                 self, "正在录音",
                 "录音过程中导出会漏掉还没识别的内容。\n建议先点「停止录音」再导出。",
@@ -1077,14 +1114,22 @@ class MainWindow(QMainWindow):
         早先 stop_recording 是同步的，顺序天然正确；改成非阻塞之后
         必须在这里显式等，否则会在录音线程还在投递任务时把引擎释放掉。
         """
-        if self.recording or self._stopping:
+        if self.recording or self._stopping or self._draining:
             self.stop_recording()
             if self.audio_thread:
                 self.audio_thread.wait(8000)
+        # 收尾期间 drain 定时器不能再触发：它会调 stop_worker，而紧接着
+        # 下面又要在加载线程上释放引擎，两边抢同一个 context。
+        if self._drain_timer:
+            self._drain_timer.stop()
+            self._drain_timer = None
+        self._draining = False
         if self._tick_timer:
             self._tick_timer.stop()
             self._tick_timer = None
         if self.transcriber:
+            # 这里必须等：进程要退出了，最后几段还在队列里就等于丢掉。
+            # 平时停止录音不走这条路（_on_stream_ended 里异步轮询）。
             self.transcriber.wait_idle(timeout=30)
 
         # 模型必须在加载线程上释放，那里才有对应的 CUDA 上下文归属。
@@ -1108,6 +1153,15 @@ class MainWindow(QMainWindow):
             self.transcriber.shutdown()
 
     def _persist_config(self) -> None:
+        """把界面上的选择写回 config。
+
+        失败必须让用户知道。原来这里是 `except Exception: pass`——只读目录、
+        磁盘满、文件被占用时，用户关掉程序 believing 设置存好了，下次启动
+        一切照旧地丢掉，却没有任何提示。
+
+        但也不能在 closeEvent 里弹框：那是退出流程，模态框会把退出卡住。
+        所以记下来，在窗口真正关掉之前用状态栏 + toast 提示。
+        """
         try:
             self.cfg.vad_aggressiveness = self.sens_slider.value()
             self.cfg.silence_ms = max(200, self.cfg.silence_ms)
@@ -1117,8 +1171,16 @@ class MainWindow(QMainWindow):
             size = self.size()
             self.cfg.window_w, self.cfg.window_h = size.width(), size.height()
             self.cfg.save()
-        except Exception:
-            pass
+        except Exception as e:
+            # 非模态提示：不影响退出，也不丢错误细节
+            self._on_status(f"⚠ 设置未能保存：{e}")
+            try:
+                self.toast_label.setText("⚠ 设置没能保存，下次启动会丢失本次改动")
+                self.toast_label.setStyleSheet(
+                    f"color:{self.theme.warning}; font-weight:600;")
+                self.toast_label.setVisible(True)
+            except Exception:
+                pass   # 窗口已经在销毁中了，提示不了就算了
 
 
 def _srt_ts(ms: int) -> str:

@@ -43,21 +43,35 @@ def has_cuda_build() -> bool:
     return bool(list(CUDA_DIR.glob(pat))) or bool(list(CUDA_DIR.glob("cudart*")))
 
 
-def nvidia_present() -> bool:
-    if os.name == "nt":
-        pass
-    elif os.name == "posix":
-        return _nvidia_posix()
-    else:
+_nvidia_cache: bool | None = None
+
+
+def nvidia_present(probe: bool = True) -> bool:
+    """有没有 N 卡。
+
+    `nvidia-smi` 是个子进程，超时 5 秒。它在启动路径上不止被调用一次，
+    而其中有些调用只是为了让状态栏文案更好看——为此在窗口显示之前阻塞
+    5 秒不值得：那时事件循环还没跑，用户看到的只是"双击了没反应"。
+
+    probe=False 时只用已缓存的结果：查过就用，没查过当没有，不付这个代价。
+    """
+    global _nvidia_cache
+    if _nvidia_cache is not None:
+        return _nvidia_cache
+    if not probe:
         return False
+    if os.name != "nt":
+        _nvidia_cache = _nvidia_posix() if os.name == "posix" else False
+        return _nvidia_cache
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=5,
         )
-        return out.returncode == 0 and out.stdout.strip() != ""
+        _nvidia_cache = out.returncode == 0 and out.stdout.strip() != ""
     except Exception:
-        return False
+        _nvidia_cache = False
+    return _nvidia_cache
 
 
 def _nvidia_posix() -> bool:
@@ -100,10 +114,12 @@ def detect(preference: str = "auto") -> DeviceInfo:
 
     if not has_cuda_build():
         detail = "未安装 CUDA 构建"
-        if nvidia_present():
+        # 这里只为文案好看才问一句显卡，所以不主动探测：启动路径上不该为了
+        # 一句状态栏文字阻塞 5 秒。已经探测过就如实说，没探测过就只给建议。
+        if nvidia_present(probe=False):
             detail += "（检测到 N 卡，可运行 tools/fetch_assets.py --cuda 启用）"
         else:
-            detail += "（未检测到 N 卡）"
+            detail += "（可运行 tools/fetch_assets.py --cuda 安装）"
         return DeviceInfo("cpu", CPU_DIR, False, detail)
 
     if not _cudart_dlls_present(CUDA_DIR):
