@@ -203,10 +203,11 @@ class WhisperEngine:
             raise WhisperError(f"模型文件不存在: {self.model_path}")
 
         plat = platforms.current()
-        dll_path = self.vendor_dir / plat.whisper_path_name
-        if not dll_path.is_file():
+        # 跨平台获取库路径
+        dll_path = platforms.get_library_path(self.vendor_dir, "whisper")
+        if dll_path is None or not dll_path.is_file():
             raise WhisperError(
-                f"找不到 whisper.dll: {dll_path}\n"
+                f"找不到 whisper 动态库: {dll_path}\n"
                 "请先运行 python tools/fetch_assets.py 下载 whisper.cpp 运行时。"
             )
 
@@ -277,16 +278,27 @@ class WhisperEngine:
         之后 load_all_from_path 就能把它注册进来。
         """
         plat = platforms.current()
+        vendor_dir = self.vendor_dir
+
+        # 跨平台加载 ggml 后端
         for name in (plat.cuda_backend, plat.cpu_backend):
-            backend = self.vendor_dir / f"{name}.{plat.lib_ext}"
-            if backend.is_file():
+            if not name:
+                continue
+            backend_path = platforms.get_library_path(vendor_dir, name)
+            if backend_path and backend_path.is_file():
                 try:
-                    platforms.load_library(backend)
+                    platforms.load_library(backend_path)
                 except OSError:
                     pass
 
-        ggml = platforms.load_library(
-            self.vendor_dir / f"{plat.ggml_lib}.{plat.lib_ext}")
+        # 加载 ggml 库
+        ggml_path = platforms.get_library_path(vendor_dir, plat.ggml_lib)
+        if ggml_path is None or not ggml_path.is_file():
+            raise WhisperError(
+                f"找不到 ggml 库: {ggml_path}\n"
+                "请检查 ggml-*.dylib/.so/.dll 是否完整解压。"
+            )
+        ggml = platforms.load_library(ggml_path)
         ggml.ggml_backend_load_all_from_path.argtypes = [ctypes.c_char_p]
         ggml.ggml_backend_dev_count.restype = ctypes.c_size_t
         ggml.ggml_backend_load_all_from_path(str(self.vendor_dir).encode("utf-8"))
@@ -294,10 +306,10 @@ class WhisperEngine:
         if n == 0:
             raise WhisperError(
                 f"ggml 没能在 {self.vendor_dir} 找到任何计算后端。\n"
-                "请检查 ggml-cpu-*.dll 是否完整解压。"
+                "请检查 ggml-cpu-*.dylib/.so/.dll 是否完整解压。"
             )
         self.backend_count = n
-        # 装了 CUDA 构建时注册数是 2（CUDA + CPU），纯 CPU 构建是 1
+        # 装了 CUDA/Metal 构建时注册数是 2（CUDA/Metal + CPU），纯 CPU 构建是 1
         self.cuda_available = n > 1
 
     # -- 函数签名 ----------------------------------------------------------

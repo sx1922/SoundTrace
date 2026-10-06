@@ -66,9 +66,7 @@ class AssetFetcher:
         self.done = False
 
     def has_runtime(self) -> bool:
-        plat = platforms.current()
-        d = self.root / "vendor" / "whisper" / "Release"
-        return (d / plat.whisper_path_name).is_file()
+        return platforms.is_runtime_present(self.root / "vendor")
 
     def has_model(self) -> bool:
         return (self.root / "models" / MODELS.get(self.model, "")).is_file()
@@ -121,7 +119,8 @@ class AssetFetcher:
             z.extractall(dest)
         zip_path.unlink(missing_ok=True)
 
-        if not (dest / "Release" / plat.whisper_path_name).is_file():
+        # 跨平台验证运行时是否就绪
+        if not platforms.is_runtime_present(self.root / "vendor"):
             raise RuntimeError("解压后没找到主库，资产结构可能变了")
 
         if self.with_cuda and a.get("cuda"):

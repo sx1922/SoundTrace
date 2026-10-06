@@ -48,6 +48,16 @@ WINDOWS = Platform(
 
 # Apple Silicon / Intel 通用：release 里是 xcframework 打包，
 # 实际会解出 .framework 或 .dylib，文件名按最常见的形态取
+# 典型结构：
+#   whisper-b5130-xcframework.zip
+#   └── whisper.xcframework/
+#       ├── macos-arm64/
+#       │   └── whisper.framework/
+#       │       └── whisper
+#       └── macos-x86_64/
+#           └── whisper.framework/
+#           └── whisper
+# 实际加载时需要找到对应架构的 .framework 内的 dylib
 MACOS = Platform(
     key="macos",
     lib_ext="dylib",
@@ -69,6 +79,95 @@ LINUX = Platform(
     official_builds=False,
     build_hint="官方不提供 Linux 预编译包，需要用 CMake 自行构建",
 )
+
+
+def _find_macos_framework_lib(vendor_dir: Path, lib_name: str) -> Path | None:
+    """在 macOS xcframework 解压目录中查找对应架构的 dylib。
+
+    xcframework 结构通常为：
+      vendor/whisper/whisper.xcframework/
+        macos-arm64/whisper.framework/whisper
+        macos-x86_64/whisper.framework/whisper
+
+    返回找到的 dylib 路径，找不到返回 None。
+    """
+    import platform as _platform
+    arch = _platform.machine().lower()
+    # 归一化架构名
+    if arch in ("arm64", "aarch64"):
+        arch_dir = "macos-arm64"
+    elif arch in ("x86_64", "amd64"):
+        arch_dir = "macos-x86_64"
+    else:
+        # 兜底：尝试两个都找找
+        for candidate in ("macos-arm64", "macos-x86_64"):
+            fw = vendor_dir / "whisper" / "whisper.xcframework" / candidate / f"{lib_name}.framework" / lib_name
+            if fw.is_file():
+                return fw
+        return None
+
+    fw = vendor_dir / "whisper" / "whisper.xcframework" / arch_dir / f"{lib_name}.framework" / lib_name
+    if fw.is_file():
+        return fw
+
+    # 兜底：另一个架构
+    other = "macos-x86_64" if arch_dir == "macos-arm64" else "macos-arm64"
+    fw = vendor_dir / "whisper" / "whisper.xcframework" / other / f"{lib_name}.framework" / lib_name
+    if fw.is_file():
+        return fw
+
+    return None
+
+
+def is_runtime_present(vendor_root: Path) -> bool:
+    """检查 whisper.cpp 运行时是否已就绪（跨平台）。"""
+    vendor_root = _as_vendor_root(vendor_root)
+    plat = current()
+    if plat.key == "windows":
+        return (vendor_root / "whisper" / "Release" / plat.whisper_path_name).is_file()
+    if plat.key == "macos":
+        # macOS 用 xcframework，查找 .framework 内的 dylib
+        main_lib = _find_macos_framework_lib(vendor_root, "whisper")
+        return main_lib is not None and main_lib.is_file()
+    if plat.key == "linux":
+        # Linux 通常编译后放在 vendor/whisper/Release/ 或 vendor/whisper/
+        return (vendor_root / "whisper" / "Release" / plat.whisper_path_name).is_file() or \
+               (vendor_root / "whisper" / plat.whisper_path_name).is_file()
+    return False
+
+
+def _as_vendor_root(vendor_root: Path) -> Path:
+    """归一化入参：既接受 vendor 根目录，也接受已经指到 vendor/whisper/Release 的路径。
+
+    whisper_bridge.py 的 VENDOR_DIR 是 vendor/whisper/Release（DLL 搜索路径
+    必须指向 dll 所在目录），而 is_runtime_present 的调用方传的是 vendor/。
+    这里统一退回 vendor 根，下面的拼接逻辑就不用区分谁传的。
+    """
+    if vendor_root.name == "Release" and vendor_root.parent.name == "whisper":
+        return vendor_root.parent.parent
+    return vendor_root
+
+
+def get_library_path(vendor_root: Path, lib_name: str = "whisper") -> Path | None:
+    """获取动态库的实际路径（跨平台）。
+
+    用于 whisper_bridge.py 等需要精确路径加载库的场景。
+    """
+    vendor_root = _as_vendor_root(vendor_root)
+    plat = current()
+    if plat.key == "windows":
+        return vendor_root / "whisper" / "Release" / f"{lib_name}.{plat.lib_ext}"
+    if plat.key == "macos":
+        return _find_macos_framework_lib(vendor_root, lib_name)
+    if plat.key == "linux":
+        p = vendor_root / "whisper" / "Release" / f"{lib_name}.{plat.lib_ext}"
+        if p.is_file():
+            return p
+        p = vendor_root / "whisper" / f"{lib_name}.{plat.lib_ext}"
+        if p.is_file():
+            return p
+        return None
+    return None
 
 
 def app_root() -> Path:
@@ -110,12 +209,17 @@ def is_supported() -> bool:
 
 
 def load_library(path: Path):
-    """按当前平台加载动态库，返回 ctypes 的库对象。"""
+    """按当前平台加载动态库，返回 ctypes 的库对象。
+
+    macOS 的 .framework 需要直接加载 framework 内的 dylib 文件，
+    而不是加载 .framework 目录本身。
+    """
     import ctypes
 
     p = current()
     if p.key == "windows":
         return ctypes.WinDLL(str(path))
+    # macOS 和 Linux 都用 CDLL，但 macOS 传入的是 .framework 内的 dylib 文件路径
     return ctypes.CDLL(str(path))
 
 

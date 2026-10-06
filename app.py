@@ -467,8 +467,8 @@ class MainWindow(QMainWindow):
         missing = []
         if not self.cfg.model_path().is_file():
             missing.append(f"模型 {self.cfg.model}")
-        if not (platforms.app_root() / "vendor" / "whisper" / "Release"
-                / plat.whisper_path_name).is_file():
+        # 跨平台检查运行时是否就绪
+        if not platforms.is_runtime_present(platforms.app_root() / "vendor"):
             missing.append("whisper.cpp 运行时")
         if not missing:
             self._refresh_devices()
