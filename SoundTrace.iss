@@ -4,9 +4,9 @@
 ;   pyinstaller SoundTrace.spec
 ;   iscc SoundTrace.iss
 ; 产物:
-;   installer/SoundTrace-Setup-0.2.1.exe
+;   installer/SoundTrace-Setup-0.2.2.exe
 ;
-; 安装包只含程序本体（约 160MB，其中大头是 Qt）。
+; 安装包只含程序本体（约 31MB，其中大头是 Qt）。
 ; whisper.cpp 运行时和 GGUF 模型不进安装包，改为首次运行下载：
 ;   · 安装包小得多，装得快
 ;   · 模型可以按用户需求换（base / small / medium）
@@ -16,7 +16,7 @@
 #define AppName "SoundTrace"
 #define AppNameCN "声迹"
 ; 版本号由 build.py 从 branding.py 同步进来，避免两处各写一份
-#define AppVersion "0.2.1"
+#define AppVersion "0.2.2"
 #define AppPublisher "SoundTrace"
 #define AppExeName "SoundTrace.exe"
 #define SourceDir "dist\SoundTrace"
@@ -46,6 +46,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
 ChangesAssociations=no
 WizardSizePercent=120
+; 升级时旧版本可能还在运行（比如停在下载失败的对话框上不退），
+; 旧版卸载器会因文件占用删不掉 exe，表现为"检测到已安装旧版、
+; 然后无法安装"。除了这里的声明，[Code] 里会在安装/卸载前先结束实例。
+CloseApplications=yes
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
@@ -82,3 +86,27 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait po
 ; Type: filesandordirs; Name: "{app}\models"
 ; Type: filesandordirs; Name: "{app}\vendor"
 Type: files; Name: "{app}\config.json"
+
+[Code]
+// 安装前先结束可能还在运行的实例，避免旧版卸载器因文件占用失败
+// 导致升级中断。进程不存在时 taskkill 返回非零，忽略即可。
+function InitializeSetup(): Boolean;
+var
+  R: Integer;
+begin
+  Exec(ExpandConstant('{cmd}'),
+       '/C taskkill /IM {#AppExeName} /F >nul 2>&1',
+       '', SW_HIDE, ewWaitUntilTerminated, R);
+  Result := True;
+end;
+
+// 从控制面板 / 系统设置里卸载时同样先结束实例
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  R: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+    Exec(ExpandConstant('{cmd}'),
+         '/C taskkill /IM {#AppExeName} /F >nul 2>&1',
+         '', SW_HIDE, ewWaitUntilTerminated, R);
+end;
