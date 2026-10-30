@@ -64,6 +64,8 @@ _ASSETS = {
 
 BASE = f"https://github.com/ggml-org/whisper.cpp/releases/download/{RELEASE_TAG}"
 HF = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+# 主站部分地区直连不通，失败时切这条镜像再试（路径结构一致）
+HF_MIRROR = "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main"
 
 MODELS_AVAILABLE = {
     "tiny": "ggml-tiny.bin",
@@ -257,7 +259,10 @@ def fetch_models(which: list[str], step: str) -> None:
     print(f"\n[{step}] 模型")
     for key in which:
         fname = MODELS_AVAILABLE[key]
-        download(f"{HF}/{fname}", MODELS / fname, f"{key} 模型")
+        if download(f"{HF}/{fname}", MODELS / fname, f"{key} 模型"):
+            continue
+        print("  主站失败，切换 hf-mirror 重试 …")
+        download(f"{HF_MIRROR}/{fname}", MODELS / fname, f"{key} 模型（镜像）")
 
 
 def main() -> int:

@@ -22,6 +22,8 @@ import device
 RELEASE_TAG = "b5454"
 BASE = f"https://github.com/ggml-org/whisper.cpp/releases/download/{RELEASE_TAG}"
 HF = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+# 主站部分地区直连不通，失败时切这条镜像再试（路径结构一致）
+HF_MIRROR = "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main"
 
 # 官方 release 资产名按平台不同。CUDA 按变体选（12.4 新卡新驱动 /
 # 11.8 老卡老驱动），由 device.preferred_cuda_variant() 按算力与驱动定。
@@ -66,7 +68,15 @@ class AssetFetcher:
 
     def __init__(self, root: Path, model: str = "small", with_cuda: bool = False):
         self.root = Path(root)
-        self.model = model
+        # 调用方（DownloadDialog）传的是 cfg.model——文件名（如
+        # "ggml-medium.bin"），而 MODELS 的键是短名（"medium"）。名字不归一，
+        # has_model 永远 False、_fetch_model 恒抛"未知模型"，程序内下载
+        # 模型这条路径就从来没有成功过。
+        if model not in MODELS:
+            key = model.removeprefix("ggml-").removesuffix(".bin")
+            self.model = key if key in MODELS else model
+        else:
+            self.model = model
         self.with_cuda = with_cuda
         self.step = Step("准备中")
         self.error = ""
@@ -170,8 +180,20 @@ class AssetFetcher:
         fname = MODELS.get(self.model)
         if not fname:
             raise RuntimeError(f"未知模型 {self.model}")
-        self._download(f"{HF}/{fname}", self.root / "models" / fname,
-                       f"下载 {self.model} 模型（约 500MB）")
+        dest = self.root / "models" / fname
+        desc = f"下载 {self.model} 模型（约 500MB）"
+        try:
+            self._download(f"{HF}/{fname}", dest, desc)
+        except Exception as primary:
+            # 主站直连不通/极慢是常态，切镜像再试一次；两边都失败才报错，
+            # 并把两侧原因都带上，别让对话框只显示一半信息
+            self.step = Step("主站不可达，切换镜像重试")
+            try:
+                self._download(f"{HF_MIRROR}/{fname}", dest, desc)
+            except Exception as mirrored:
+                raise RuntimeError(
+                    f"模型下载失败：主站 {primary}；镜像 {mirrored}"
+                ) from mirrored
 
 
 def fetch_background(root: Path, model: str, with_cuda: bool,
