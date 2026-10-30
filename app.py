@@ -476,7 +476,8 @@ class MainWindow(QMainWindow):
 
         # 程序内直接下载，不依赖 tools/fetch_assets.py —— 打包后安装目录里
         # 没有 Python 解释器，那边的脚本一个也跑不起来。
-        detail = "将下载约 500MB（运行时 40MB + 模型 466MB），只需一次，之后完全离线运行。"
+        detail = ("将下载约 480MB（运行时 9MB + 模型 466MB），有 N 卡时另选装 "
+                  "CUDA 构建（约 690MB）。只需一次，之后完全离线运行。")
         if platforms.is_frozen():
             QMessageBox.information(
                 self, "首次运行",
@@ -498,7 +499,8 @@ class MainWindow(QMainWindow):
         # 弹一个带进度的下载窗口
         root = platforms.app_root()
         want_cuda = device.nvidia_present()
-        dlg = DownloadDialog(self, self.cfg.model, want_cuda)
+        dlg = DownloadDialog(self, self.cfg.model, want_cuda,
+                             text_muted=self.theme.text_muted)
         dlg.start_download(root)
         dlg.exec()
         if dlg.ok:
@@ -1043,7 +1045,12 @@ class MainWindow(QMainWindow):
         self._toast("已清空")
 
     def copy_all(self) -> None:
-        QApplication.clipboard().setText(self.text_edit.toPlainText())
+        text = self.text_edit.toPlainText()
+        if not text.strip():
+            # 旧版照抄空串还提示"已复制"，用户粘出来是空的只会觉得软件有 bug
+            self._toast("还没有可复制的内容")
+            return
+        QApplication.clipboard().setText(text)
         self._toast("已复制全文到剪贴板")
 
     def export(self) -> None:

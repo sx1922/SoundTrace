@@ -133,7 +133,10 @@ class SettingsDialog(QDialog):
 
         note = QLabel("设置在下次录音时生效（断句阈值在开始录音时构造）。")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#888;")
+        # 用主题的次级文字色，别写死灰度——浅色主题下 #888 偏淡，深色下又不是
+        # theme.text_muted 那个值，两套主题都对不齐
+        note.setStyleSheet(
+            f"color:{theme.THEMES.get(cfg.theme, theme.LIGHT).text_muted};")
         root.addWidget(note)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

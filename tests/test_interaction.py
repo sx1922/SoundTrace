@@ -277,8 +277,16 @@ def test_toast_does_not_touch_status(win):
 
 
 def test_toast_texts_exist(win):
+    win._on_final_text("第一句", 0, 1000)
     win.copy_all()
     assert "已复制" in win.toast_label.text()
+
+
+def test_copy_all_empty_gives_honest_feedback(win):
+    """旧版把空串照抄进剪贴板还提示"已复制"，用户粘出来是空的。"""
+    win.text_edit.clear()
+    win.copy_all()
+    assert "还没有" in win.toast_label.text()
 
 
 # -- 停止录音的收尾不能阻塞界面 ---------------------------------------------

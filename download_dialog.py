@@ -36,7 +36,8 @@ def human(n: float) -> str:
 
 
 class DownloadDialog(QDialog):
-    def __init__(self, parent, model: str = "small", with_cuda: bool = False):
+    def __init__(self, parent, model: str = "small", with_cuda: bool = False,
+                 text_muted: str = "#888"):
         super().__init__(parent)
         self.setWindowTitle("下载所需文件")
         self.setMinimumWidth(420)
@@ -45,13 +46,14 @@ class DownloadDialog(QDialog):
         self.ok = False
         self._model = model
         self._cuda = with_cuda
+        self._text_muted = text_muted
 
         self.bridge = _Bridge()
         self.bridge.progress.connect(self._on_progress)
         self.bridge.finished.connect(self._on_finished)
 
         root = QVBoxLayout(self)
-        self.msg = QLabel("首次运行需要下载 whisper.cpp 运行时和模型，约 500MB。\n"
+        self.msg = QLabel("首次运行需要下载 whisper.cpp 运行时和模型，约 480MB。\n"
                           "只需一次，之后完全离线运行。")
         self.msg.setWordWrap(True)
         root.addWidget(self.msg)
@@ -61,7 +63,7 @@ class DownloadDialog(QDialog):
         root.addWidget(self.bar)
 
         self.detail = QLabel("准备中…")
-        self.detail.setStyleSheet("color:#888;")
+        self.detail.setStyleSheet(f"color:{self._text_muted};")
         root.addWidget(self.detail)
 
         self.cancel_btn = QPushButton("取消")

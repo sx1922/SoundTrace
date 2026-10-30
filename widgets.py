@@ -35,20 +35,41 @@ def db_to_pos(db: float, width: int) -> float:
 
 
 class LevelMeter(QWidget):
-    """横���电平表，带峰值保持。"""
+    """横向电平表，带峰值保持。"""
 
     def __init__(self, parent: QWidget | None = None, width_hint: int = 170,
                  height_hint: int = 16) -> None:
         super().__init__(parent)
         self.setMinimumSize(width_hint, height_hint)
         self.setMaximumHeight(height_hint)
+        # 整个矩形每帧都会被填满（底槽色打底），声明不透明可以让 Qt
+        # 省掉与父窗口的混合计算——老机器的 GUI 线程经不起白烧
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
         self._db = DB_FLOOR
         self._peak_db = DB_FLOOR
         self._active = False
         self._theme = theme.LIGHT
+        self._make_palette()
+
+    def _make_palette(self) -> None:
+        """把主题色预处理成画笔对象。
+
+        电平表每 60~90ms 重画一帧，逐帧 new 上百个 QColor 是白烧的；
+        主题切换时才重建。
+        """
+        t = self._theme
+        self._track = QColor(t.meter_track)
+        self._segments = (QColor(t.success), QColor(t.warning), QColor(t.danger))
+        # 覆盖层用文字色做低透明叠加：暗色主题下黑色覆盖层几乎看不见
+        # （实测），文字色在两套主题里天然带反差
+        self._overlay = QColor(t.text)
+        self._overlay.setAlpha(70)
+        self._peak_pen = QPen(QColor(t.text), 2)
+        self._tick_color = QColor(t.text_muted)
 
     def set_theme(self, t) -> None:
         self._theme = t
+        self._make_palette()
         self.update()
 
     def set_level(self, amp: float) -> None:
@@ -75,7 +96,7 @@ class LevelMeter(QWidget):
         w, h = self.width(), self.height()
 
         # 底槽
-        p.fillRect(0, 0, w, h, QColor(self._theme.meter_track))
+        p.fillRect(0, 0, w, h, self._track)
 
         bar_h = max(4, h - 8)
         y = (h - bar_h) // 2
@@ -85,26 +106,26 @@ class LevelMeter(QWidget):
         for x in range(0, w, seg_w):
             frac = x / max(w - 1, 1)
             if frac < 0.62:
-                c = QColor(self._theme.success)
+                c = self._segments[0]
             elif frac < 0.85:
-                c = QColor(self._theme.warning)
+                c = self._segments[1]
             else:
-                c = QColor(self._theme.danger)
+                c = self._segments[2]
             p.fillRect(x, y, seg_w - 1, bar_h, c)
 
-        # 当前电平：从左到右按 dB 位置画深色覆盖
+        # 当前电平：从左到右按 dB 位置画覆盖，标出"已有信号"的区域
         if self._db > DB_FLOOR:
             end = int(db_to_pos(self._db, w))
-            p.fillRect(0, y, end, bar_h, QColor(0, 0, 0, 90))
+            p.fillRect(0, y, end, bar_h, self._overlay)
 
         # 峰值保持线
         if self._peak_db > DB_FLOOR:
             x = int(db_to_pos(self._peak_db, w))
-            p.setPen(QPen(QColor(self._theme.text), 2))
+            p.setPen(self._peak_pen)
             p.drawLine(x, y - 1, x, y + bar_h + 1)
 
         # 刻度文字
-        p.setPen(QColor(self._theme.text_muted))
+        p.setPen(self._tick_color)
         f = p.font()
         f.setPointSize(max(6, f.pointSize() - 3))
         p.setFont(f)

@@ -103,8 +103,9 @@ def stylesheet(t: Theme) -> str:
 QWidget {{
     background: {t.bg};
     color: {t.text};
-    font-size: 13px;
 }}
+/* 字号不进 QSS：main() 用 setFontSize 设的是磅值，随系统 DPI 缩放；
+   写死 13px 会在 125%/150% 缩放的高分屏上把字冻小。 */
 QMainWindow, QDialog {{ background: {t.bg}; }}
 
 /* ---------- 输入类 ---------- */

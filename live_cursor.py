@@ -106,12 +106,13 @@ class LiveInsertionMark(QWidget):
     def paintEvent(self, event):  # noqa: N802
         if not self._visible:
             return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-
+        # 先算位置再起画笔：rect 为空时直接返回，不能留一个没 end() 的
+        # QPainter 挂在控件上（靠 GC 收尾是碰运气）
         rect = self.cursor_rect()
         if rect is None:
             return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
         x, y, w, h = rect
 
         accent = QColor(self.palette().highlight().color())
@@ -147,6 +148,8 @@ class EmptyStateOverlay(QWidget):
         self._theme = theme
         self.hide()
         editor.textChanged.connect(lambda: self._sync(editor))
+        # 首次启动就是空框：不主动同步一次，引导文案永远不出现
+        self._sync(editor)
 
     def set_theme(self, theme) -> None:
         self._theme = theme
