@@ -8,7 +8,7 @@
 ---
 ## 安装
 
-**Windows**：下载 `SoundTrace-Setup-0.1.3.exe` 运行安装（装到用户目录，不需要管理员权限）。
+**Windows**：下载 `SoundTrace-Setup-0.2.0.exe` 运行安装（装到用户目录，不需要管理员权限）。
 首次启动会弹窗下载 whisper.cpp 运行时和模型（约 480MB，只需一次），之后完全离线。
 
 **macOS**：`git clone` 后双击 `run.command`，或终端里 `./run.command`。
