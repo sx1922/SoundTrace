@@ -86,6 +86,8 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait po
 ; Type: filesandordirs; Name: "{app}\models"
 ; Type: filesandordirs; Name: "{app}\vendor"
 Type: files; Name: "{app}\config.json"
+; 自检功能写在同目录的日志，卸载时一并清掉
+Type: files; Name: "{app}\soundtrace-selftest.log"
 
 [Code]
 // 安装前先结束可能还在运行的实例，避免旧版卸载器因文件占用失败
