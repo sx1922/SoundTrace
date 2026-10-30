@@ -29,20 +29,27 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import platforms  # noqa: E402
+import device  # noqa: E402
 
 VENDOR = ROOT / "vendor"
 MODELS = ROOT / "models"
 
-# 挑一个带预编译包的 tag
-RELEASE_TAG = "b5130"
+# 挑一个带预编译包的 tag。b5454 的资产名较 b5130 有变：
+# whisper-cublas-11.8.0-bin-x64.zip -> whisper-bin-win-cuda-11.8.0-x64.zip
+RELEASE_TAG = "b5454"
 
 # 官方 release 的资产名按平台不同。Linux 没有预编译包，需要自行编译。
+# CUDA 按变体选：老卡 + 老驱动跑不动 CUDA 12.4 运行时，11.8 可以——
+# 选哪个由 device.preferred_cuda_variant() 按算力和驱动定。
 _ASSETS = {
     "windows": {
         "cpu": "whisper-bin-x64.zip",
-        "cuda": "whisper-cublas-12.4.0-bin-x64.zip",
+        "cuda": {
+            "12.4": "whisper-bin-win-cuda-12.4.0-x64.zip",
+            "11.8": "whisper-bin-win-cuda-11.8.0-x64.zip",
+        },
         # 不声明独立 cudart 资产：whisper.cpp 的 release 里没有这个包，
-        # b5130 的 cublas 包已内置 cudart。就绪核验在 fetch_runtime 里做。
+        # CUDA 包已内置 cudart。就绪核验在 fetch_runtime 里做。
         "dest": "whisper",
     },
     "macos": {
@@ -167,7 +174,7 @@ def _require(path: Path, what: str) -> None:
     print(f"  已安装到 {path.parent}")
 
 
-def fetch_runtime(cuda: bool) -> bool:
+def fetch_runtime(cuda: bool, cuda_variant: str | None = None) -> bool:
     """返回 True 表示 CPU 运行时确实就位。
 
     运行时是硬依赖，缺了后面一步都跑不了，所以失败必须中断，
@@ -201,14 +208,25 @@ def fetch_runtime(cuda: bool) -> bool:
     print(f"\n[2/3] CUDA/Metal 运行时 ({plat.key})")
     cuda_dest = VENDOR / "whisper_cuda"
 
-    cuda_asset = A.get("cuda")
-    if not cuda_asset:
+    cuda_variants = A.get("cuda")
+    if not cuda_variants:
         print(f"  当前平台 {plat.key} 无需单独 CUDA 运行时（{plat.build_hint}）")
         return True
 
+    # 变体按算力 + 驱动选：老卡/老驱动给 11.8，其余 12.4；都不合适就跳过。
+    # --cuda-variant 可强制指定（排查问题时用）。
+    variant = cuda_variant or device.preferred_cuda_variant()
+    if not variant:
+        print("  未检测到可用的 CUDA 环境（无 N 卡 / 算力过低 / 缺 nvidia-smi）。")
+        print("  跳过 CUDA 构建——核显与老显卡走 CPU 路径即可正常使用。")
+        return True
+    cuda_asset = cuda_variants.get(variant)
+    print(f"  选定 CUDA 构建 {variant}（按算力/驱动自动选择）")
+
     if platforms.is_runtime_present(VENDOR / "whisper_cuda"):
         print("  CUDA/Metal 运行时已就绪")
-    elif download(f"{BASE}/{A['cuda']}", VENDOR / "whisper-cuda.zip", "CUDA/Metal 构建（较大）"):
+    elif download(f"{BASE}/{cuda_asset}", VENDOR / "whisper-cuda.zip",
+                  f"CUDA {variant} 构建（较大）"):
         print("  解压中 …")
         _extract(VENDOR / "whisper-cuda.zip", cuda_dest)
         (VENDOR / "whisper-cuda.zip").unlink(missing_ok=True)
@@ -246,6 +264,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(MODELS_AVAILABLE))
     ap.add_argument("--cuda", action="store_true", help="额外下载 CUDA/Metal 运行时")
+    ap.add_argument("--cuda-variant", choices=("12.4", "11.8"), default=None,
+                    help="强制指定 CUDA 变体（默认按算力/驱动自动选）")
     ap.add_argument("--all", action="store_true", help="下载全部模型")
     args = ap.parse_args()
 
@@ -254,7 +274,7 @@ def main() -> int:
         print(f"提示: {plat.key} 尚未提供开箱即用的预编译包。")
 
     print(f"whisper.cpp 构建版本: {RELEASE_TAG}")
-    if not fetch_runtime(args.cuda):
+    if not fetch_runtime(args.cuda, args.cuda_variant):
         print("\n运行时没能就位，后面装什么都不管用。先解决上面的下载问题再重试。")
         return 1
 

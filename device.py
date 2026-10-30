@@ -44,6 +44,52 @@ def has_cuda_build() -> bool:
 
 
 _nvidia_cache: bool | None = None
+_gpu_cache: dict | None = None
+
+
+def _nvidia_probe() -> dict | None:
+    """一次 nvidia-smi 同时取名称 / 算力 / 驱动版本，进程内缓存。
+
+    没有可用的 N 卡（含 nvidia-smi 不存在、调用失败）返回 None。
+    算力和驱动是老卡选型的两个判据：CUDA 12.4 运行时要求驱动 >= 552，
+    老卡 + 老驱动跑不动它，但 11.8 构建可以。
+    """
+    global _gpu_cache
+    if _gpu_cache is not None:
+        return _gpu_cache or None
+    if os.name != "nt":
+        if _nvidia_posix():
+            _gpu_cache = {"name": None, "compute_cap": None, "driver_major": None}
+            return _gpu_cache
+        _gpu_cache = {}
+        return None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,compute_cap,driver_version",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            _gpu_cache = {}
+            return None
+        parts = [p.strip() for p in out.stdout.strip().splitlines()[0].split(",")]
+        info: dict = {"name": parts[0] if parts else None,
+                      "compute_cap": None, "driver_major": None}
+        if len(parts) > 1:
+            try:
+                info["compute_cap"] = float(parts[1])
+            except ValueError:
+                pass
+        if len(parts) > 2:
+            try:
+                info["driver_major"] = int(parts[2].split(".")[0])
+            except ValueError:
+                pass
+        _gpu_cache = info
+        return info
+    except Exception:
+        _gpu_cache = {}
+        return None
 
 
 def nvidia_present(probe: bool = True) -> bool:
@@ -60,18 +106,42 @@ def nvidia_present(probe: bool = True) -> bool:
         return _nvidia_cache
     if not probe:
         return False
-    if os.name != "nt":
-        _nvidia_cache = _nvidia_posix() if os.name == "posix" else False
-        return _nvidia_cache
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
-        _nvidia_cache = out.returncode == 0 and out.stdout.strip() != ""
-    except Exception:
-        _nvidia_cache = False
+    _nvidia_cache = _nvidia_probe() is not None
     return _nvidia_cache
+
+
+# CUDA 12.4 运行时在 Windows 上要求驱动 >= 552（NVIDIA 官方 551.61 向上取整）；
+# 11.8 构建对老驱动的兼容线低得多——老卡 + 老驱动的可用路径。
+CUDA_12_MIN_DRIVER = 552
+# 预编译包实际编译的最低算力（Maxwell）。Kepler 及更老没有对应架构，只能 CPU。
+MIN_COMPUTE_CAP = 5.0
+
+
+def nvidia_gpu_info(probe: bool = True) -> dict | None:
+    """N 卡详情（name / compute_cap / driver_major），无 N 卡返回 None。"""
+    if not probe and _gpu_cache is None:
+        return None
+    return _nvidia_probe()
+
+
+def preferred_cuda_variant(info: dict | None = None) -> str | None:
+    """该用哪个 CUDA 预编译包："12.4" / "11.8"，None 表示回退 CPU。
+
+    - 算力 < 5.0（Kepler 及更老）：包里没编译对应架构，只能 CPU
+    - 驱动 < 552：CUDA 12.4 运行时起不来，11.8 对老驱动友好 → 11.8
+    - 探测不到算力/驱动（没有 nvidia-smi，通常意味着没装驱动）：给 12.4
+      也会静默回退 CPU，那不如直接 None，让下载器跳过 CUDA 别白下 700MB
+    """
+    if info is None:
+        info = _nvidia_probe()
+    if info is None or info.get("compute_cap") is None:
+        return None
+    if info["compute_cap"] < MIN_COMPUTE_CAP:
+        return None
+    drv = info.get("driver_major")
+    if drv is not None and drv < CUDA_12_MIN_DRIVER:
+        return "11.8"
+    return "12.4"
 
 
 def _nvidia_posix() -> bool:

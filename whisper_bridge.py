@@ -239,6 +239,11 @@ class WhisperEngine:
 
         cparams = self._dll.whisper_context_default_params()
         cparams.use_gpu = self.use_gpu
+        # flash attention：GPU 上显著省显存（老卡 2GB/4GB 也能装下 small 甚至
+        # medium）。CPU 上也默认开：b5454 实测 15s 长样本在 CPU+flash 关闭时
+        # 触发解码重复循环（"支"字重复上百次，CER 93%），开启后消失；
+        # GPU 开启另有无重复的 CER 基线佐证。
+        cparams.flash_attn = True
         self._ctx = self._dll.whisper_init_from_file_with_params(
             str(self.model_path).encode("utf-8"), cparams
         )

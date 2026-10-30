@@ -9,7 +9,7 @@
 ## 安装
 
 **Windows**：下载 `SoundTrace-Setup-0.1.3.exe` 运行安装（装到用户目录，不需要管理员权限）。
-首次启动会弹窗下载 whisper.cpp 运行时和模型（约 500MB，只需一次），之后完全离线。
+首次启动会弹窗下载 whisper.cpp 运行时和模型（约 480MB，只需一次），之后完全离线。
 
 **macOS**：`git clone` 后双击 `run.command`，或终端里 `./run.command`。
 
@@ -203,7 +203,7 @@ mel 窗口计算，你喂 2 秒还是 30 秒成本几乎一样。所以短句多
 
 ## 性能
 
-实测环境：AMD Ryzen 5 5500（12 逻辑核）+ RTX 4060 8GB，whisper.cpp b5130，ggml-small 模型。
+实测环境：AMD Ryzen 5 5500（12 逻辑核）+ RTX 4060 8GB，whisper.cpp b5454，ggml-small 模型。
 下表是 11 秒英文音频的实测结果：
 
 | 设备 | 识别耗时 | 实时率 | 体验 |
@@ -251,7 +251,7 @@ python tools\fetch_assets.py --cuda
 ```
 
 这会额外下载约 700MB 的 CUDA 构建到 `vendor\whisper_cuda\`。
-CUDA 运行时（cudart）已随 b5130 的 CUDA 构建包内置，解压后程序会核验
+CUDA 运行时（cudart）已随 b5454 的 CUDA 构建包内置，解压后程序会核验
 就位情况；真缺失时会给出手动补齐指引（缺了它驱动再新也起不来，且失败
 是静默退回 CPU，程序会在下载阶段就拦住）。
 
@@ -542,8 +542,17 @@ ctypes 按绝对路径预加载 `ggml-cuda.dll`，把依赖先拉进进程，注
 
 ### 仍然存在
 
-- **macOS / Linux 未在真机验证**：`whisper_path_name` 假设库在扁平的
-  `Release/` 目录，而 xcframework 解压后不是这个结构，资产检查必然失败。
+- **macOS / Linux 未在真机验证**：`platforms.py` 的资产检查与库定位已按
+  xcframework 结构改写（`is_runtime_present` / `get_library_path` 会找
+  `.framework` 内的 dylib），但从未在真机上跑过，用前先执行
+  `python tools/selfcheck.py`。
+- **核显（Intel/AMD iGPU）没有 GPU 加速路径**：whisper.cpp 官方从未发布过
+  x64 的 Vulkan 预编译包（b5130/b5454 实测均无），项目也无法代编译分发。
+  核显与老旧显卡走 CPU 路径——base/small 在纯 CPU 上都能实时跑（实测
+  RTF 0.08 / 0.30@2线程），首次运行按内存自动选型会直接给出装得下的模型。
+- **老 N 卡（算力 < 5.0，Kepler 及更早）无法用 CUDA**：预编译包没编译对应
+  架构，程序会回退 CPU。算力 5.0+ 但驱动低于 552 的老卡，首次下载会自动
+  选 CUDA 11.8 构建而不是跑不起来的 12.4。
 
 ### 测量口径提醒
 

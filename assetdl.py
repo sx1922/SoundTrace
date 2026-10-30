@@ -17,23 +17,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import platforms
+import device
 
-RELEASE_TAG = "b5130"
+RELEASE_TAG = "b5454"
 BASE = f"https://github.com/ggml-org/whisper.cpp/releases/download/{RELEASE_TAG}"
 HF = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
-# 官方 release 资产名按平台不同
+# 官方 release 资产名按平台不同。CUDA 按变体选（12.4 新卡新驱动 /
+# 11.8 老卡老驱动），由 device.preferred_cuda_variant() 按算力与驱动定。
 ASSETS = {
     "windows": {
         "runtime": "whisper-bin-x64.zip",
-        "cuda": "whisper-cublas-12.4.0-bin-x64.zip",
-        # 不再声明独立的 cudart 资产：whisper.cpp 的 release 里从来没有
-        # "cudart-llama-win-x64.zip"（恒 404），而 b5130 的 cublas 包已内置
-        # cudart。缺 cudart 的核验在 _fetch_runtime 里做。
+        "cuda": {
+            "12.4": "whisper-bin-win-cuda-12.4.0-x64.zip",
+            "11.8": "whisper-bin-win-cuda-11.8.0-x64.zip",
+        },
+        # 不声明独立的 cudart 资产：whisper.cpp 的 release 里从来没有
+        # "cudart-llama-win-x64.zip"（恒 404），CUDA 包已内置 cudart。
+        # 缺 cudart 的核验在 _fetch_runtime 里做。
     },
     "macos": {"runtime": f"whisper-{RELEASE_TAG}-xcframework.zip",
-              "cuda": None, "cudart": None},
-    "linux": {"runtime": None, "cuda": None, "cudart": None},
+              "cuda": None},
+    "linux": {"runtime": None, "cuda": None},
 }
 
 MODELS = {
@@ -126,8 +131,18 @@ class AssetFetcher:
             raise RuntimeError("解压后没找到主库，资产结构可能变了")
 
         if self.with_cuda and a.get("cuda"):
+            # 变体按算力 + 驱动选：老卡/老驱动给 11.8（CUDA 12.4 运行时
+            # 要求驱动 >= 552），其余 12.4。选不出（无 N 卡/算力过低/缺
+            # nvidia-smi）就跳过 CUDA 下载，别白拉 700MB——核显与老显卡
+            # 走 CPU 路径即可正常使用。
+            variant = device.preferred_cuda_variant()
+            cuda_asset = a["cuda"].get(variant) if variant else None
+            if not cuda_asset:
+                self.step = Step("跳过 CUDA（无可用 CUDA 环境，走 CPU）")
+                return
             czip = self.root / "vendor" / "whisper-cuda.zip"
-            self._download(f"{BASE}/{a['cuda']}", czip, "下载 CUDA 构建（较大）")
+            self._download(f"{BASE}/{cuda_asset}", czip,
+                           f"下载 CUDA {variant} 构建（较大）")
             cdest = self.root / "vendor" / "whisper_cuda"
             cdest.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(czip) as z:
