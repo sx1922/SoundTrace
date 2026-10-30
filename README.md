@@ -250,8 +250,10 @@ whisper.cpp 的 CPU 版和 CUDA 版是**两套不同的 DLL**，同一个目录�
 python tools\fetch_assets.py --cuda
 ```
 
-这会额外下载约 700MB 的 CUDA 构建到 `vendor\whisper_cuda\`，
-并自动补上 CUDA 运行时 DLL（构建包本身不含 cudart，缺了它驱动再新也起不来）。
+这会额外下载约 700MB 的 CUDA 构建到 `vendor\whisper_cuda\`。
+CUDA 运行时（cudart）已随 b5130 的 CUDA 构建包内置，解压后程序会核验
+就位情况；真缺失时会给出手动补齐指引（缺了它驱动再新也起不来，且失败
+是静默退回 CPU，程序会在下载阶段就拦住）。
 
 装好后 `config.json` 里的 `device` 保持 `"auto"` 即可，程序会自动探测并使用 GPU。
 状态栏会显示当前实际跑在 CPU 还是 GPU，以及探测结论。

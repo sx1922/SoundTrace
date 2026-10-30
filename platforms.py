@@ -81,91 +81,122 @@ LINUX = Platform(
 )
 
 
-def _find_macos_framework_lib(vendor_dir: Path, lib_name: str) -> Path | None:
-    """在 macOS xcframework 解压目录中查找对应架构的 dylib。
+# 运行时按"族"分目录：CPU 主包在 vendor/whisper/，CUDA 包在 vendor/whisper_cuda/。
+# device.py 的 CPU_DIR / CUDA_DIR、assetdl 与 fetch_assets 的检查都围绕这两族。
+RUNTIME_FAMILIES = ("whisper", "whisper_cuda")
 
-    xcframework 结构通常为：
-      vendor/whisper/whisper.xcframework/
+
+def _split_vendor(path: Path) -> tuple[Path, str]:
+    """把调用方给的任意一层路径归一化成 (vendor 根目录, 运行时族名)。
+
+    历史上有多种形态都在传，不能只认一种：
+      vendor/                        -> (vendor, "whisper")
+      vendor/whisper/                -> (vendor, "whisper")
+      vendor/whisper/Release         -> (vendor, "whisper")
+      vendor/whisper_cuda/Release    -> (vendor, "whisper_cuda")
+
+    4b33c58 的 _as_vendor_root 只认 whisper/Release 这一种形态，CUDA 目录
+    原样通过后又被拼上 whisper/Release，得到
+    vendor/whisper_cuda/Release/whisper/Release/whisper.dll —— 装了 CUDA
+    构建、device=auto 的机器（GPU 用户的标准形态）模型加载必然失败。
+    """
+    p = path
+    family = "whisper"
+    if p.name == "Release":
+        p = p.parent
+    if p.name in RUNTIME_FAMILIES:
+        family = p.name
+        p = p.parent
+    return p, family
+
+
+def _find_macos_framework_lib(family_dir: Path, lib_name: str) -> Path | None:
+    """在 macOS xcframework 解压目录中查找对应架构的库。
+
+    family_dir 是 vendor/whisper 这一层（xcframework 解压在它下面）：
+      whisper.xcframework/
         macos-arm64/whisper.framework/whisper
         macos-x86_64/whisper.framework/whisper
 
-    返回找到的 dylib 路径，找不到返回 None。
+    返回找到的 dylib 路径，找不到返回 None。未经真机验证。
     """
     import platform as _platform
     arch = _platform.machine().lower()
-    # 归一化架构名
+    # 归一化架构名；认不出的架构两个都试
     if arch in ("arm64", "aarch64"):
-        arch_dir = "macos-arm64"
+        archs = ("macos-arm64", "macos-x86_64")
     elif arch in ("x86_64", "amd64"):
-        arch_dir = "macos-x86_64"
+        archs = ("macos-x86_64", "macos-arm64")
     else:
-        # 兜底：尝试两个都找找
-        for candidate in ("macos-arm64", "macos-x86_64"):
-            fw = vendor_dir / "whisper" / "whisper.xcframework" / candidate / f"{lib_name}.framework" / lib_name
-            if fw.is_file():
-                return fw
+        archs = ("macos-arm64", "macos-x86_64")
+
+    xcf = family_dir / f"{lib_name}.xcframework"
+    if not xcf.is_dir():
         return None
-
-    fw = vendor_dir / "whisper" / "whisper.xcframework" / arch_dir / f"{lib_name}.framework" / lib_name
-    if fw.is_file():
-        return fw
-
-    # 兜底：另一个架构
-    other = "macos-x86_64" if arch_dir == "macos-arm64" else "macos-arm64"
-    fw = vendor_dir / "whisper" / "whisper.xcframework" / other / f"{lib_name}.framework" / lib_name
-    if fw.is_file():
-        return fw
-
+    for arch_dir in archs:
+        fw = xcf / arch_dir / f"{lib_name}.framework" / lib_name
+        if fw.is_file():
+            return fw
     return None
 
 
-def is_runtime_present(vendor_root: Path) -> bool:
-    """检查 whisper.cpp 运行时是否已就绪（跨平台）。"""
-    vendor_root = _as_vendor_root(vendor_root)
+def is_runtime_present(vendor_root: Path, family: str | None = None) -> bool:
+    """检查 whisper.cpp 运行时是否已就绪（跨平台）。
+
+    family 不传时从路径推断（如 vendor/whisper_cuda/Release -> "whisper_cuda"），
+    显式传入可覆盖推断。
+    """
+    root, inferred = _split_vendor(vendor_root)
+    fam = family or inferred
     plat = current()
+    main = plat.whisper_path_name
     if plat.key == "windows":
-        return (vendor_root / "whisper" / "Release" / plat.whisper_path_name).is_file()
+        return (root / fam / "Release" / main).is_file()
     if plat.key == "macos":
-        # macOS 用 xcframework，查找 .framework 内的 dylib
-        main_lib = _find_macos_framework_lib(vendor_root, "whisper")
-        return main_lib is not None and main_lib.is_file()
+        if fam != "whisper":
+            return False    # Metal 随主包，没有单独的 CUDA 族
+        lib = _find_macos_framework_lib(root / fam, "whisper")
+        return lib is not None and lib.is_file()
     if plat.key == "linux":
         # Linux 通常编译后放在 vendor/whisper/Release/ 或 vendor/whisper/
-        return (vendor_root / "whisper" / "Release" / plat.whisper_path_name).is_file() or \
-               (vendor_root / "whisper" / plat.whisper_path_name).is_file()
+        return (root / fam / "Release" / main).is_file() or \
+               (root / fam / main).is_file()
     return False
-
-
-def _as_vendor_root(vendor_root: Path) -> Path:
-    """归一化入参：既接受 vendor 根目录，也接受已经指到 vendor/whisper/Release 的路径。
-
-    whisper_bridge.py 的 VENDOR_DIR 是 vendor/whisper/Release（DLL 搜索路径
-    必须指向 dll 所在目录），而 is_runtime_present 的调用方传的是 vendor/。
-    这里统一退回 vendor 根，下面的拼接逻辑就不用区分谁传的。
-    """
-    if vendor_root.name == "Release" and vendor_root.parent.name == "whisper":
-        return vendor_root.parent.parent
-    return vendor_root
 
 
 def get_library_path(vendor_root: Path, lib_name: str = "whisper") -> Path | None:
     """获取动态库的实际路径（跨平台）。
 
+    lib_name 是逻辑名（whisper / ggml / ggml-cuda / ggml-cpu-haswell），
+    Windows 下文件名即 <lib_name>.dll。运行时族从 vendor_root 推断：
+    device.CUDA_DIR（vendor/whisper_cuda/Release）解析出的是 CUDA 目录
+    下的库，而不是被错误拼上 whisper/Release。
+
     用于 whisper_bridge.py 等需要精确路径加载库的场景。
     """
-    vendor_root = _as_vendor_root(vendor_root)
+    root, family = _split_vendor(vendor_root)
     plat = current()
     if plat.key == "windows":
-        return vendor_root / "whisper" / "Release" / f"{lib_name}.{plat.lib_ext}"
+        return root / family / "Release" / f"{lib_name}.{plat.lib_ext}"
     if plat.key == "macos":
-        return _find_macos_framework_lib(vendor_root, lib_name)
+        fam_dir = root / family
+        # 官方 release 形态：主库在 xcframework 的 .framework 里
+        p = _find_macos_framework_lib(fam_dir, lib_name)
+        if p is not None:
+            return p
+        # 自编译 / ggml 后端形态：平铺 dylib，带或不带 lib 前缀
+        for base in (fam_dir, fam_dir / "Release"):
+            for stem in (f"lib{lib_name}", lib_name):
+                cand = base / f"{stem}.{plat.lib_ext}"
+                if cand.is_file():
+                    return cand
+        return None
     if plat.key == "linux":
-        p = vendor_root / "whisper" / "Release" / f"{lib_name}.{plat.lib_ext}"
-        if p.is_file():
-            return p
-        p = vendor_root / "whisper" / f"{lib_name}.{plat.lib_ext}"
-        if p.is_file():
-            return p
+        for base in (root / family / "Release", root / family):
+            for stem in (lib_name, f"lib{lib_name}"):
+                cand = base / f"{stem}.{plat.lib_ext}"
+                if cand.is_file():
+                    return cand
         return None
     return None
 

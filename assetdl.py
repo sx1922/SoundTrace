@@ -27,7 +27,9 @@ ASSETS = {
     "windows": {
         "runtime": "whisper-bin-x64.zip",
         "cuda": "whisper-cublas-12.4.0-bin-x64.zip",
-        "cudart": "cudart-llama-win-x64.zip",
+        # 不再声明独立的 cudart 资产：whisper.cpp 的 release 里从来没有
+        # "cudart-llama-win-x64.zip"（恒 404），而 b5130 的 cublas 包已内置
+        # cudart。缺 cudart 的核验在 _fetch_runtime 里做。
     },
     "macos": {"runtime": f"whisper-{RELEASE_TAG}-xcframework.zip",
               "cuda": None, "cudart": None},
@@ -132,31 +134,22 @@ class AssetFetcher:
                 z.extractall(cdest)
             czip.unlink(missing_ok=True)
 
-            # CUDA 构建包里不含 CUDA runtime（cudart）。缺了它，驱动再新也
-            # 起不来 CUDA，而且失败是**静默**的：ggml 解析不到同目录下的
-            # cublas64_12.dll / cudart64_12.dll，只在日志里留一行 "no GPU
-            # found" 就悄悄退回 CPU——用户会以为是驱动问题。
-            #
-            # 这一步原来根本没做：ASSETS 里声明了 cudart，却从没被读过。
-            # 于是装 exe 的 CUDA 用户永远拿不到它。
-            cudart = a.get("cudart")
-            if not cudart:
-                raise RuntimeError("该平台没有配套的 CUDA runtime 包，CUDA 无法使用")
-            czip2 = self.root / "vendor" / "cudart.zip"
-            self._download(f"{BASE}/{cudart}", czip2, "补齐 CUDA runtime DLL")
-            release = cdest / "Release"
-            release.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(czip2) as z:
-                z.extractall(release)
-            czip2.unlink(missing_ok=True)
-            # 下载成功但解压不出 DLL，等于没补上——必须在交付前确认，
-            # 否则又是一轮"看着装好了、实际静默退回 CPU"
+            # CUDA runtime（cudart）核验。旧版把 cudart 当独立资产下载，
+            # 但 "cudart-llama-win-x64.zip" 这个名字在 whisper.cpp 的 release
+            # 里根本不存在（b5130 全部 12 个资产实测无此包），新机器装 CUDA
+            # 必炸 404。实测 b5130 的 whisper-cublas-12.4.0 包已内置
+            # cudart64_12.dll / nvrtc / nvblas（本机 vendor/whisper_cuda/Release
+            # 与 whisper.dll 同批解出、CPU 目录无这些文件即为证据），
+            # 所以解压后直接核验就位情况。cudart 缺失的失败是静默的——
+            # ggml 只在日志里留一行 "no GPU found" 就退回 CPU，用户会以为
+            # 是驱动问题——必须在这里拦住。
             ext = platforms.current().lib_ext
-            if not list(release.glob(f"cudart*.{ext}")):
+            if not list(cdest.rglob(f"cudart*.{ext}")):
                 raise RuntimeError(
-                    "CUDA runtime 包里没有 cudart DLL，资产结构可能变了。"
-                    "请手动从 whisper.cpp release 下载 cudart 并解压到 "
-                    f"{release}")
+                    "CUDA 构建包解压后没有 cudart DLL，CUDA 无法启用（缺失时"
+                    "程序会静默退回 CPU）。请安装 CUDA Toolkit 12.x，把 "
+                    f"cudart64_12.dll 复制到 {cdest / 'Release'} 后重启程序。"
+                )
 
     def _fetch_model(self) -> None:
         fname = MODELS.get(self.model)

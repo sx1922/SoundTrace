@@ -82,8 +82,9 @@ def _nvidia_posix() -> bool:
 def _cudart_dlls_present(d: Path) -> bool:
     """CUDA 运行时 DLL 是否随包提供。
 
-    whisper.cpp 的 cublas 包不含 cudart，需要机器上装 CUDA Toolkit，
-    除非另外下载了 cudart-llama 包。没有它 CUDA 构建照样起不来。
+    b5130 的 whisper-cublas-12.4.0 包已内置 cudart64_12.dll / nvrtc / nvblas
+    （本机 CUDA 目录与 whisper.dll 同批解出即证，README 旧版"不含 cudart"
+    的说法是早期构建的经验）。没有它 CUDA 构建照样起不来。
     """
     plat = platforms.current()
     ext = plat.lib_ext

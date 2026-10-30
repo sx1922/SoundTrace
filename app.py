@@ -463,7 +463,6 @@ class MainWindow(QMainWindow):
     # -- 启动检查 ----------------------------------------------------------
 
     def _check_assets(self) -> None:
-        plat = platforms.current()
         missing = []
         if not self.cfg.model_path().is_file():
             missing.append(f"模型 {self.cfg.model}")
@@ -487,9 +486,10 @@ class MainWindow(QMainWindow):
             return
 
         QMessageBox.warning(
-            "以下内容还没准备好："
-            + chr(10).join(f"  · {m}" for m in missing)
-            + "请在项目目录运行： python tools/fetch_assets.py",
+            self, "缺少必要文件",
+            "以下内容还没准备好：\n"
+            + "\n".join(f"  · {m}" for m in missing)
+            + "\n请在项目目录运行： python tools/fetch_assets.py",
         )
         self.start_btn.setEnabled(False)
         self.status_label.setText("缺少必要文件")

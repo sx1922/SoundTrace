@@ -41,7 +41,8 @@ _ASSETS = {
     "windows": {
         "cpu": "whisper-bin-x64.zip",
         "cuda": "whisper-cublas-12.4.0-bin-x64.zip",
-        "cudart": "cudart-llama-win-x64.zip",
+        # 不声明独立 cudart 资产：whisper.cpp 的 release 里没有这个包，
+        # b5130 的 cublas 包已内置 cudart。就绪核验在 fetch_runtime 里做。
         "dest": "whisper",
     },
     "macos": {
@@ -173,6 +174,10 @@ def fetch_runtime(cuda: bool) -> bool:
     不能像之前那样打完"完成"字样再让用户去 app.py 里撞报错。
     """
     plat = platforms.current()
+    # 资产名都从这张表取。4b33c58 重写本文件时把定义弄丢了，A 成了
+    # 未定义名字：新机器首次下载和 --cuda 分支必崩 NameError，
+    # 只有"一切都已装好"的机器碰巧不触发。
+    A = _ASSETS[plat.key]
     print(f"\n[1/2] whisper.cpp 运行时 ({plat.key})")
     dest = VENDOR / "whisper"
 
@@ -214,16 +219,19 @@ def fetch_runtime(cuda: bool) -> bool:
     else:
         return False
 
-    # CUDA 构建不含 cudart，得单独补，否则驱动再新也起不来
-    # macOS 不需要 cudart（Metal 由系统提供），Linux 走系统 CUDA
+    # CUDA runtime（cudart）核验。旧版在这里下载 "cudart-llama-win-x64.zip"，
+    # 但这个名字在 whisper.cpp 的任何 release 里都不存在（b5130 全部 12 个
+    # 资产实测无此包，恒 404）。实测 b5130 的 whisper-cublas-12.4.0 包已把
+    # cudart64_12.dll / nvrtc / nvblas 打进包里（本机 CUDA 目录与 whisper.dll
+    # 同批解出、CPU 目录无这些文件即证），所以解压后核验就位即可；
+    # 真缺了给出手动补齐指引，而不是请求幽灵 URL。
     if plat.key == "windows":
-        print("  补齐 CUDA runtime DLL …")
-        cudart_asset = A.get("cudart")
-        if cudart_asset and download(f"{BASE}/{cudart_asset}", VENDOR / "cudart.zip", "cudart"):
-            with zipfile.ZipFile(VENDOR / "cudart.zip") as z:
-                z.extractall(cuda_dest / "Release")
-            (VENDOR / "cudart.zip").unlink(missing_ok=True)
-            print("  已安装 cudart")
+        if list(cuda_dest.rglob("cudart*.dll")):
+            print("  CUDA runtime (cudart) 已随 CUDA 构建包就绪")
+        else:
+            print("  [警告] CUDA 构建包解压后没有 cudart DLL，CUDA 起不来。")
+            print("         请安装 CUDA Toolkit 12.x，把 cudart64_12.dll 复制到")
+            print(f"         {cuda_dest / 'Release'}")
     return True
 
 
