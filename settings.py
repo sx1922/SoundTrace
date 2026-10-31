@@ -140,6 +140,9 @@ class SettingsDialog(QDialog):
         root.addWidget(note)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        # 默认文案跟系统区域走，中文系统上也会显示 OK/Cancel——统一成中文
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)

@@ -179,6 +179,19 @@ def recommend(preferred: str | None = None,
                          MODEL_PROFILE["ggml-small.bin"][0] + UI_OVERHEAD_MB, True)
 
 
+def short_label(model: str) -> str:
+    """给下拉框条目用的一小段占用说明，完整版见 describe()。
+
+    下拉框宽度有限，"纯 CPU N 线程约 N 倍实时"这类长文案挤得顶行很吵，
+    还和实际启用的设备对不上；只保留内存数，速度细节进 tooltip。
+    """
+    mem, _ = MODEL_PROFILE.get(model, (0.0, 0.0))
+    if mem:
+        return f"约 {mem:.0f}MB"
+    w = _weight_mb(model)
+    return f"权重 {w:.0f}MB" if w else "占用未实测"
+
+
 def describe(model: str) -> str:
     """给界面用的一行说明。"""
     mem, rtf = MODEL_PROFILE.get(model, (0.0, 0.0))

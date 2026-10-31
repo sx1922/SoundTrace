@@ -142,19 +142,61 @@ QComboBox QAbstractItemView::item {{
     border-radius: 4px;
     min-height: 22px;
 }}
-QSpinBox::up-button, QSpinBox::down-button {{ width: 16px; }}
+QSpinBox::up-button, QSpinBox::down-button {{
+    width: 18px;
+    background: transparent;
+    border: none;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background: {t.surface_alt};
+    border-radius: 4px;
+}}
+QSpinBox::up-arrow {{
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-bottom: 4px solid {t.text_muted};
+    width: 0; height: 0;
+}}
+QSpinBox::up-arrow:hover, QSpinBox::up-arrow:pressed {{ border-bottom-color: {t.text}; }}
+QSpinBox::down-arrow {{
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid {t.text_muted};
+    width: 0; height: 0;
+}}
+QSpinBox::down-arrow:hover, QSpinBox::down-arrow:pressed {{ border-top-color: {t.text}; }}
+
+/* 正文区多留呼吸感：继承输入类的边框，内边距单独放大 */
+QTextEdit {{ padding: 10px 12px; }}
 
 /* ---------- 按钮 ---------- */
 QPushButton {{
     background: {t.surface};
+    color: {t.text};
     border: 1px solid {t.border};
     border-radius: {RADIUS_MD}px;
-    padding: 7px 16px;
+    padding: 7px 18px;
+    min-height: 20px;
+    font-weight: 500;
 }}
-QPushButton:hover {{ background: {t.surface_alt}; border-color: {t.text_muted}; }}
-QPushButton:pressed {{ background: {t.border}; }}
-QPushButton:disabled {{ color: {t.text_muted}; border-color: {t.border}; }}
+QPushButton:hover {{ background: {t.surface_alt}; border-color: {t.accent}; }}
+QPushButton:pressed {{ background: {t.border}; padding-top: 8px; padding-bottom: 6px; }}
+QPushButton:disabled {{ color: {t.text_muted}; background: {t.surface}; border-color: {t.border}; }}
 QPushButton:focus {{ border: 1px solid {t.accent}; }}
+
+/* ---------- 勾选框 ---------- */
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{
+    width: 17px; height: 17px;
+    border: 1px solid {t.border};
+    border-radius: 5px;
+    background: {t.surface_alt};
+}}
+QCheckBox::indicator:hover {{ border-color: {t.accent}; }}
+QCheckBox::indicator:checked {{
+    background: {t.accent};
+    border-color: {t.accent};
+}}
 
 /* ---------- 滑块 ---------- */
 QSlider::groove:horizontal {{
@@ -166,11 +208,12 @@ QSlider::sub-page:horizontal {{ background: {t.accent}; border-radius: 2px; }}
 QSlider::handle:horizontal {{
     background: {t.surface};
     border: 1px solid {t.border};
-    width: 14px; height: 14px;
-    margin: -6px 0;
-    border-radius: 7px;
+    width: 16px; height: 16px;
+    margin: -7px 0;
+    border-radius: 8px;
 }}
-QSlider::handle:horizontal:hover {{ border-color: {t.accent}; }}
+QSlider::handle:horizontal:hover {{ border-color: {t.accent}; background: {t.surface_alt}; }}
+QSlider::handle:horizontal:pressed {{ background: {t.accent}; border-color: {t.accent}; }}
 
 /* ---------- 进度条 ---------- */
 QProgressBar {{
@@ -220,6 +263,7 @@ QGroupBox::title {{
     left: 12px;
     padding: 0 5px;
     color: {t.text_muted};
+    font-weight: 600;
 }}
 
 /* ---------- 对话框里的按钮 ---------- */
@@ -230,8 +274,8 @@ QToolTip {{
     background: {t.surface_alt};
     color: {t.text};
     border: 1px solid {t.border};
-    border-radius: {RADIUS_SM}px;
-    padding: 5px 7px;
+    border-radius: {RADIUS_MD}px;
+    padding: 6px 9px;
 }}
 """
 

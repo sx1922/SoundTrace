@@ -268,6 +268,13 @@ class MainWindow(QMainWindow):
         ver.setStyleSheet(f"color:{self.theme.text_muted};")
         head.addWidget(ver)
         root.addLayout(head)
+        # 抬头与控件区之间一条发丝线，给界面分组的节奏
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(
+            f"color:{self.theme.border}; background:{self.theme.border};"
+            f"border:none; max-height:1px;")
+        root.addWidget(sep)
 
         # 第一行：设备与参数
         row1 = QHBoxLayout()
@@ -316,6 +323,7 @@ class MainWindow(QMainWindow):
         btn_font.setPointSize(12)
         btn_font.setBold(True)
         self.start_btn.setFont(btn_font)
+        self._style_primary_button(False)
         row2.addWidget(self.start_btn)
 
         self.clear_btn = QPushButton("清空")
@@ -557,8 +565,15 @@ class MainWindow(QMainWindow):
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         for p in self.cfg.available_models():
-            self.model_combo.addItem(f"{p.name}  —  {recommend.describe(p.name)}",
-                                    p.name)
+            # 下拉框只放短说明（内存数），速度/设备细节进 tooltip——
+            # 长文案会把第一行挤得很吵
+            self.model_combo.addItem(
+                f"{p.name}  ·  {recommend.short_label(p.name)}", p.name)
+            # 注意：这版 PySide6 的 addItem 返回 None 而不是索引，
+            # tooltip 得用 count()-1 定位
+            i = self.model_combo.count() - 1
+            self.model_combo.setItemData(i, recommend.describe(p.name),
+                                         int(Qt.ToolTipRole))
         if self.model_combo.count() == 0:
             self.model_combo.addItem("(models/ 目录为空)", "")
         idx = self.model_combo.findData(self.cfg.model)
@@ -662,14 +677,12 @@ class MainWindow(QMainWindow):
         self._rec_start = time.monotonic()
         self.setWindowTitle("[● 录音中] " + self._base_title)
         self.start_btn.setText("停止录音")
-        self.start_btn.setStyleSheet(
-            f"background:{self.theme.danger}; color:#ffffff;"
-            f"border:1px solid {self.theme.danger}; border-radius:8px;"
-        )
+        self._style_primary_button(True)
         self._set_controls_enabled(False)
         self.live_mark.set_active(True)
         self.rec_pill.setVisible(True)
         self._update_rec_pill("00:00")
+        self._start_pill_breathing()
         self._on_status(f"录音中 · {self.device_info.label} · {self.device_info.detail}")
         self._on_vad_state("idle")
         self._tick_timer = QTimer(self)
@@ -793,7 +806,8 @@ class MainWindow(QMainWindow):
         self._stopping = False
         self.setWindowTitle(self._base_title)
         self.start_btn.setText("开始录音")
-        self.start_btn.setStyleSheet("")
+        self._style_primary_button(False)
+        self._stop_pill_breathing()
         self.start_btn.setEnabled(True)
         self._set_controls_enabled(True)
         self._on_vad_state("idle")
@@ -877,6 +891,7 @@ class MainWindow(QMainWindow):
         self.toast_label.setStyleSheet(
             f"color:{self.theme.success}; padding-right:4px;")
         self.toast_label.setVisible(True)
+        self._fade_in(self.toast_label, 160)
         if self._toast_timer is None:
             self._toast_timer = QTimer(self)
             self._toast_timer.setSingleShot(True)
@@ -887,13 +902,73 @@ class MainWindow(QMainWindow):
         self.toast_label.setVisible(False)
         self.toast_label.clear()
 
-    def _update_rec_pill(self, stamp: str) -> None:
-        """抬头上的录音指示牌。"""
+    def _fade_in(self, w, msec: int = 160) -> None:
+        """控件出现时的短淡入。
+
+        QGraphicsOpacityEffect 每帧多一次合成，只在出现的一瞬间挂上，
+        播完即摘——不做常驻效果，老机器的 GUI 线程经不起常驻合成。
+        """
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtCore import QAbstractAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        eff = QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", w)
+        anim.setDuration(msec)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        anim.start(QAbstractAnimation.DeleteWhenStopped)
+
+    def _style_primary_button(self, recording: bool) -> None:
+        """主按钮是整个界面的视觉锚点：空闲时品牌色，录音中警示色。
+
+        样式挂控件上而不是 QSS：两种状态差异太大，放 QSS 里得引入
+        动态属性选择器，得不偿失。
+        """
         t = self.theme
-        self.rec_pill.setText(f"  ●  录音中  {stamp}  ")
+        bg = t.danger if recording else t.accent
+        self.start_btn.setStyleSheet(
+            f"background:{bg}; color:#ffffff; border:none;"
+            f"border-radius:19px; padding:8px 30px; font-weight:600;")
+
+    def _update_rec_pill(self, stamp: str) -> None:
+        """抬头上的录音指示牌：淡红底 + 红字，比一整块实色红温和。"""
+        t = self.theme
+        self.rec_pill.setText(f"●  录音中  {stamp}")
         self.rec_pill.setStyleSheet(
-            f"color:{t.accent_text}; background:{t.danger};"
-            f"border-radius:11px; padding:3px 10px; font-weight:600;")
+            f"color:{t.danger}; background:{t.danger}2E;"
+            f"border:1px solid {t.danger}59; border-radius:11px;"
+            f"padding:3px 12px; font-weight:600;")
+
+    def _start_pill_breathing(self) -> None:
+        """录音指示牌缓慢呼吸（透明度 1.0 <-> 0.72）。
+
+        口述时眼睛不看屏幕，这个动画只给余光；效果挂在 pill 上，
+        停止录音时随控件一起隐藏，资源开销可以忽略。
+        """
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self._pill_effect = QGraphicsOpacityEffect(self.rec_pill)
+        self.rec_pill.setGraphicsEffect(self._pill_effect)
+        self._pill_anim = QPropertyAnimation(self._pill_effect, b"opacity")
+        self._pill_anim.setStartValue(1.0)
+        self._pill_anim.setKeyValueAt(0.5, 0.72)
+        self._pill_anim.setEndValue(1.0)
+        self._pill_anim.setDuration(1200)
+        self._pill_anim.setLoopCount(-1)
+        self._pill_anim.setEasingCurve(QEasingCurve.InOutSine)
+        self._pill_anim.start()
+
+    def _stop_pill_breathing(self) -> None:
+        anim = getattr(self, "_pill_anim", None)
+        if anim is not None:
+            anim.stop()
+            self.rec_pill.setGraphicsEffect(None)
+            self._pill_anim = None
+            self._pill_effect = None
 
     def _on_vad_state(self, state: str) -> None:
         self._vad_state = state
@@ -928,8 +1003,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_partial_text(self, text: str) -> None:
+        was_hidden = not self.preview_box.isVisible()
         self.preview.setText(text)
         self.preview_box.setVisible(True)
+        # 预览框每次从无到有时轻轻浮现，正在打字的过程里不再闪烁
+        if was_hidden:
+            self._fade_in(self.preview_box, 140)
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
